@@ -675,7 +675,8 @@ func TestStateQueries(t *testing.T) {
 	syncer.saveTask(&things.Task{UUID: "someday-past-1", Title: "Someday Past Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, ScheduledDate: &pastRef})
 	syncer.saveTask(&things.Task{UUID: "someday-project", Title: "Someday Project", Type: things.TaskTypeProject, Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusPending})
 	syncer.saveTask(&things.Task{UUID: "someday-project-task", Title: "Deferred Project Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, ParentTaskIDs: []string{"someday-project"}})
-	syncer.saveTask(&things.Task{UUID: "recurring-upcoming-1", Title: "Recurring Upcoming Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, RecurrenceIDs: []string{"template-1"}})
+	syncer.saveTask(&things.Task{UUID: "recurrence-link-someday-1", Title: "Recurrence Link Without Rule", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, RecurrenceIDs: []string{"template-1"}})
+	syncer.saveTask(&things.Task{UUID: "recurring-upcoming-1", Title: "Recurring Upcoming Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, Repeater: &things.RepeaterConfiguration{Version: 4}})
 	syncer.saveTask(&things.Task{UUID: "upcoming-1", Title: "Upcoming Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, ScheduledDate: &futureRef})
 	syncer.saveTask(&things.Task{UUID: "upcoming-ref-1", Title: "Upcoming via tir", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, TodayIndexReference: &futureRef})
 	syncer.saveTask(&things.Task{UUID: "completed-1", Title: "Completed Task", Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusCompleted, CompletionDate: &completedAtRecent})
@@ -774,11 +775,17 @@ func TestStateQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TasksInSomeday failed: %v", err)
 		}
-		if len(tasks) != 2 {
-			t.Fatalf("expected 2 someday tasks, got %d", len(tasks))
+		if len(tasks) != 3 {
+			t.Fatalf("expected 3 someday tasks, got %d", len(tasks))
 		}
-		if tasks[0].UUID != "someday-1" || tasks[1].UUID != "someday-past-1" {
-			t.Fatalf("unexpected someday tasks: %s, %s", tasks[0].UUID, tasks[1].UUID)
+		got := map[string]bool{}
+		for _, task := range tasks {
+			got[task.UUID] = true
+		}
+		for _, uuid := range []string{"someday-1", "someday-past-1", "recurrence-link-someday-1"} {
+			if !got[uuid] {
+				t.Errorf("expected %s in Someday", uuid)
+			}
 		}
 	})
 

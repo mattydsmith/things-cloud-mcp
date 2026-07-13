@@ -185,7 +185,7 @@ func (st *State) TasksInSomeday(opts QueryOpts) ([]*things.Task, error) {
 	query, args := taskViewQuery(things.TaskScheduleSomeday, opts)
 	query += ` AND t.project_uuid IS NULL
 		AND t.heading_uuid IS NULL
-		AND t.recurrence_ids IS NULL
+		AND t.recurrence_rule IS NULL
 		AND NOT (
 		(t.scheduled_date IS NOT NULL AND t.scheduled_date > ?)
 		OR (t.today_index_ref IS NOT NULL AND t.today_index_ref > ?)
@@ -206,7 +206,7 @@ func (st *State) TasksInUpcoming(opts QueryOpts) ([]*things.Task, error) {
 	query += ` AND (
 		(t.scheduled_date IS NOT NULL AND t.scheduled_date > ?)
 		OR (t.today_index_ref IS NOT NULL AND t.today_index_ref > ?)
-		OR t.recurrence_ids IS NOT NULL
+		OR t.recurrence_rule IS NOT NULL
 	)`
 	args = append(args, nowUnix, nowUnix)
 	query += ` ORDER BY COALESCE(t.scheduled_date, t.today_index_ref), t."index"`

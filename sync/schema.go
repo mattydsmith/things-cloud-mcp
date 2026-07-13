@@ -145,9 +145,8 @@ DELETE FROM change_log;
 DELETE FROM sync_state;
 `
 
-// migration5 stores recurrence references needed to reproduce the native
-// Upcoming view. The aggregate cache is disposable, so force a full rebuild
-// from Things Cloud after adding the column.
+// migration5 stores recurrence references and rebuilds the aggregate cache so
+// existing recurrence_rule rows are populated from Things Cloud history.
 const migration5 = `
 ALTER TABLE tasks ADD COLUMN recurrence_ids TEXT;
 DELETE FROM task_tags;

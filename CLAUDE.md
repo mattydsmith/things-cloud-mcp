@@ -88,7 +88,7 @@ The `st` JSON field maps to the `start` column in Things' SQLite DB. It represen
 | 0 | `TaskScheduleInbox` | null | Inbox |
 | 1 | `TaskScheduleAnytime` | before next UTC day | Today and Anytime |
 | 1 | `TaskScheduleAnytime` | null/future | Anytime |
-| 2 | `TaskScheduleSomeday` | future date or recurrence link (`rt`) | Upcoming |
+| 2 | `TaskScheduleSomeday` | future date or repeater rule (`rr`) | Upcoming |
 | 2 | `TaskScheduleSomeday` | standalone, non-recurring, not future | Someday |
 
 These are locally derived views. By default they exclude canceled, deleted, trashed, and hidden-by-parent tasks.

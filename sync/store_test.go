@@ -101,6 +101,7 @@ func TestTaskStorage(t *testing.T) {
 		completion := now.Add(time.Hour)
 		modification := now.Add(30 * time.Minute)
 		alarmOffset := 3600
+		repeater := &things.RepeaterConfiguration{Version: 4}
 
 		task := &things.Task{
 			UUID:                "task-full",
@@ -123,6 +124,7 @@ func TestTaskStorage(t *testing.T) {
 			ActionGroupIDs:      []string{"heading-1"},
 			AlarmTimeOffset:     &alarmOffset,
 			RecurrenceIDs:       []string{"template-1", "template-2"},
+			Repeater:            repeater,
 			TagIDs:              []string{"tag-a", "tag-b", "tag-c"},
 		}
 
@@ -174,6 +176,9 @@ func TestTaskStorage(t *testing.T) {
 		}
 		if len(retrieved.RecurrenceIDs) != 2 || retrieved.RecurrenceIDs[0] != "template-1" || retrieved.RecurrenceIDs[1] != "template-2" {
 			t.Errorf("RecurrenceIDs mismatch: got %v", retrieved.RecurrenceIDs)
+		}
+		if retrieved.Repeater == nil || retrieved.Repeater.Version != 4 {
+			t.Errorf("Repeater mismatch: got %#v", retrieved.Repeater)
 		}
 
 		// Verify dates (compare Unix timestamps to avoid timezone issues)

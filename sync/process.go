@@ -383,6 +383,7 @@ func applyTaskPayload(old *things.Task, uuid string, p things.TaskActionItemPayl
 		t.AlarmTimeOffset = old.AlarmTimeOffset
 		t.TagIDs = old.TagIDs
 		t.RecurrenceIDs = old.RecurrenceIDs
+		t.Repeater = old.Repeater
 		t.DelegateIDs = old.DelegateIDs
 	}
 
@@ -465,6 +466,9 @@ func applyTaskPayload(old *things.Task, uuid string, p things.TaskActionItemPayl
 	}
 	if p.RecurrenceTaskIDs != nil {
 		t.RecurrenceIDs = *p.RecurrenceTaskIDs
+	}
+	if p.HasRepeater() {
+		t.Repeater = p.Repeater
 	}
 	if p.DelegateIDs != nil {
 		t.DelegateIDs = *p.DelegateIDs

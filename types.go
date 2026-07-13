@@ -202,6 +202,7 @@ type Task struct {
 	AlarmTimeOffset     *int
 	TagIDs              []string
 	RecurrenceIDs       []string
+	Repeater            *RepeaterConfiguration `json:"-"`
 	DelegateIDs         []string
 }
 
@@ -245,6 +246,7 @@ type TaskActionItemPayload struct {
 	completionDateSet         bool                   `json:"-"`
 	deadlineDateSet           bool                   `json:"-"`
 	taskIRSet                 bool                   `json:"-"`
+	repeaterSet               bool                   `json:"-"`
 	//  {
 	//      "acrd": null,
 	//      "ar": [],
@@ -297,6 +299,7 @@ func (p *TaskActionItemPayload) UnmarshalJSON(bs []byte) error {
 	_, p.completionDateSet = raw["sp"]
 	_, p.deadlineDateSet = raw["dd"]
 	_, p.taskIRSet = raw["tir"]
+	_, p.repeaterSet = raw["rr"]
 	return nil
 }
 
@@ -318,6 +321,11 @@ func (p TaskActionItemPayload) HasDeadlineDate() bool {
 // HasTaskIR reports whether the payload explicitly included tir.
 func (p TaskActionItemPayload) HasTaskIR() bool {
 	return p.taskIRSet || p.TaskIR != nil
+}
+
+// HasRepeater reports whether the payload explicitly included rr.
+func (p TaskActionItemPayload) HasRepeater() bool {
+	return p.repeaterSet || p.Repeater != nil
 }
 
 // TaskActionItem describes an event on a Task
