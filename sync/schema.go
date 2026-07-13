@@ -1,6 +1,6 @@
 package sync
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 const schema = `
 -- Schema version tracking
@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     heading_uuid TEXT,
     alarm_time_offset INTEGER,
     recurrence_rule TEXT,
+    recurrence_ids TEXT,
     today_index_ref INTEGER,
     deleted INTEGER DEFAULT 0
 );
@@ -144,6 +145,20 @@ DELETE FROM change_log;
 DELETE FROM sync_state;
 `
 
+// migration5 stores recurrence references and rebuilds the aggregate cache so
+// existing recurrence_rule rows are populated from Things Cloud history.
+const migration5 = `
+ALTER TABLE tasks ADD COLUMN recurrence_ids TEXT;
+DELETE FROM task_tags;
+DELETE FROM area_tags;
+DELETE FROM checklist_items;
+DELETE FROM tasks;
+DELETE FROM areas;
+DELETE FROM tags;
+DELETE FROM change_log;
+DELETE FROM sync_state;
+`
+
 func (s *Syncer) migrate() error {
 	// Check current version
 	var version int
@@ -162,24 +177,37 @@ func (s *Syncer) migrate() error {
 		return nil
 	}
 
+	tx, err := s.rawDB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	// Incremental migrations
 	if version < 2 {
-		if _, err := s.db.Exec(migration2); err != nil {
+		if _, err := tx.Exec(migration2); err != nil {
 			return err
 		}
 	}
 	if version < 3 {
-		if _, err := s.db.Exec(migration3); err != nil {
+		if _, err := tx.Exec(migration3); err != nil {
 			return err
 		}
 	}
 	if version < 4 {
-		if _, err := s.db.Exec(migration4); err != nil {
+		if _, err := tx.Exec(migration4); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		if _, err := tx.Exec(migration5); err != nil {
 			return err
 		}
 	}
 
 	// Update schema version
-	_, err = s.db.Exec("UPDATE schema_version SET version = ?", schemaVersion)
-	return err
+	if _, err := tx.Exec("UPDATE schema_version SET version = ?", schemaVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

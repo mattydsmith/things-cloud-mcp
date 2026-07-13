@@ -136,6 +136,19 @@ func TestTaskActionItemPayload_AllFields(t *testing.T) {
 	if p.ExtensionData == nil {
 		t.Error("expected ExtensionData to be set")
 	}
+	if !p.HasRepeater() || p.Repeater != nil {
+		t.Error("expected Repeater to be explicitly present and nil")
+	}
+}
+
+func TestTaskActionItemPayload_RepeaterPresence(t *testing.T) {
+	var p TaskActionItemPayload
+	if err := json.Unmarshal([]byte(`{"rr":{"rrv":4,"fu":16,"fa":1,"of":[]}}`), &p); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if !p.HasRepeater() || p.Repeater == nil || p.Repeater.Version != 4 {
+		t.Fatalf("expected Repeater configuration, got %#v", p.Repeater)
+	}
 }
 
 func TestTaskActionItemPayload_NullableDatePresence(t *testing.T) {

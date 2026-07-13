@@ -146,6 +146,8 @@ Once connected, Claude can do pretty much everything you'd do in the Things app:
 - **Shutdown is graceful.** `SIGINT` and `SIGTERM` trigger an HTTP shutdown with a timeout instead of dropping in-flight requests immediately.
 - **Read surfaces support pagination.** REST list endpoints and the corresponding MCP list tools accept optional `limit` and `offset` values.
 - **Old `tir`/`sr` cache corruption is repaired automatically.** Opening a pre-fix sync database triggers a one-time local cache reset and full resync from Things Cloud history.
+- **Native view parity is testable on macOS.** Run `go run ./cmd/parity -url http://127.0.0.1:8765` to compare Today, Inbox, Anytime, Someday, and Upcoming UUIDs with Things 3 through AppleScript. The command exits non-zero on any mismatch.
+- **Mac-local deployments can bind only to loopback.** Set `BIND_ADDR=127.0.0.1`; use `DB_PATH` to choose the persistent SQLite mirror location.
 - **Soft-deleted rows are purged from the local cache after sync.** This keeps the SQLite mirror from growing forever while preserving normal sync semantics.
 
 ## Getting started

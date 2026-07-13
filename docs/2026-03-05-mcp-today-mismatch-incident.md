@@ -2,7 +2,19 @@
 
 ## Status
 
-Closed. The original March 5 fixes addressed cursoring, concurrent sync, and read-path error surfacing. A later follow-up on **2026-03-15** fixed stale `today_index_ref` carry-over on partial task updates and added a schema migration that forces a clean local resync for old corrupted caches. See [2026-03-15-stability-wrap-up.md](2026-03-15-stability-wrap-up.md).
+Closed. The original March 5 fixes addressed cursoring, concurrent sync, and read-path error surfacing. A later follow-up on **2026-03-15** fixed stale `today_index_ref` carry-over on partial task updates and added a schema migration that forces a clean local resync for old corrupted caches. A **2026-07-13** parity audit then corrected the remaining native-list classification gaps described below. See [2026-03-15-stability-wrap-up.md](2026-03-15-stability-wrap-up.md).
+
+## 2026-07-13 Native Parity Follow-up
+
+A UUID comparison against Things 3 showed that the mirror contained the missing tasks, but its list queries did not reproduce native Things rules:
+
+- Today omitted carried-over tasks because it used an exact-day window.
+- Anytime was treated as the complement of Today, but native Things includes Today tasks in Anytime.
+- Someday included tasks nested in projects or headings that native Someday hides.
+- Upcoming omitted repeating templates because repeater rules were not persisted in SQLite. The separate `rt` link marks generated instances and does not itself imply Upcoming.
+- Shared filters allowed canceled tasks and did not consistently hide tasks under inactive or trashed parents.
+
+The repair uses shared active-task visibility rules, preserves both repeater rules and recurrence links in schema version 5, and forces a one-time rebuild of the disposable cloud cache. `cmd/parity` now compares native and MCP UUID sets for all five core views and blocks rollout on any difference.
 
 ## Summary
 

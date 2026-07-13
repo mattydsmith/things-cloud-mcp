@@ -43,6 +43,29 @@ func TestRunInitialSync(t *testing.T) {
 	})
 }
 
+func TestServerAddress(t *testing.T) {
+	t.Parallel()
+
+	if got, want := serverAddress("127.0.0.1", "8765"), "127.0.0.1:8765"; got != want {
+		t.Fatalf("serverAddress(loopback) = %q, want %q", got, want)
+	}
+	if got, want := serverAddress("", "8080"), ":8080"; got != want {
+		t.Fatalf("serverAddress(default) = %q, want %q", got, want)
+	}
+}
+
+func TestEnvOrDefault(t *testing.T) {
+	t.Setenv("THINGS_TEST_PATH", "/tmp/things.db")
+	if got, want := envOrDefault("THINGS_TEST_PATH", "/data/things.db"), "/tmp/things.db"; got != want {
+		t.Fatalf("envOrDefault(configured) = %q, want %q", got, want)
+	}
+
+	t.Setenv("THINGS_TEST_PATH", "")
+	if got, want := envOrDefault("THINGS_TEST_PATH", "/data/things.db"), "/data/things.db"; got != want {
+		t.Fatalf("envOrDefault(default) = %q, want %q", got, want)
+	}
+}
+
 type stubShutdownServer struct {
 	listenStarted  chan struct{}
 	shutdownCalled chan struct{}

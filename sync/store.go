@@ -2,6 +2,8 @@ package sync
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	things "github.com/arthursoares/things-cloud-sdk"
@@ -15,7 +17,7 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 				uuid, type, title, note, status, schedule,
 				scheduled_date, deadline_date, completion_date, creation_date, modification_date,
 				"index", today_index, in_trash, area_uuid, project_uuid, heading_uuid,
-				alarm_time_offset, recurrence_rule, today_index_ref, deleted
+				alarm_time_offset, recurrence_rule, recurrence_ids, today_index_ref, deleted
 			FROM tasks
 			WHERE uuid = ? AND deleted = 0
 		`, uuid)
@@ -36,6 +38,7 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 		headingUUID      sql.NullString
 		alarmTimeOffset  sql.NullInt64
 		recurrenceRule   sql.NullString
+		recurrenceIDs    sql.NullString
 		todayIndexRef    sql.NullInt64
 		deleted          int
 	)
@@ -44,7 +47,7 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 		&t.UUID, &taskType, &t.Title, &t.Note, &status, &schedule,
 		&scheduledDate, &deadlineDate, &completionDate, &creationDate, &modificationDate,
 		&t.Index, &t.TodayIndex, &inTrash, &areaUUID, &projectUUID, &headingUUID,
-		&alarmTimeOffset, &recurrenceRule, &todayIndexRef, &deleted,
+		&alarmTimeOffset, &recurrenceRule, &recurrenceIDs, &todayIndexRef, &deleted,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -99,6 +102,16 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 	if alarmTimeOffset.Valid {
 		offset := int(alarmTimeOffset.Int64)
 		t.AlarmTimeOffset = &offset
+	}
+	if recurrenceIDs.Valid {
+		if err := json.Unmarshal([]byte(recurrenceIDs.String), &t.RecurrenceIDs); err != nil {
+			return nil, fmt.Errorf("decode recurrence IDs for task %s: %w", uuid, err)
+		}
+	}
+	if recurrenceRule.Valid {
+		if err := json.Unmarshal([]byte(recurrenceRule.String), &t.Repeater); err != nil {
+			return nil, fmt.Errorf("decode repeater for task %s: %w", uuid, err)
+		}
 	}
 
 	// Load tags from junction table
@@ -168,6 +181,24 @@ func (s *Syncer) saveTask(t *things.Task) error {
 		todayIndexRef = sql.NullInt64{Int64: t.TodayIndexReference.Unix(), Valid: true}
 	}
 
+	var recurrenceIDs sql.NullString
+	if len(t.RecurrenceIDs) > 0 {
+		encoded, err := json.Marshal(t.RecurrenceIDs)
+		if err != nil {
+			return fmt.Errorf("encode recurrence IDs for task %s: %w", t.UUID, err)
+		}
+		recurrenceIDs = sql.NullString{String: string(encoded), Valid: true}
+	}
+
+	var recurrenceRule sql.NullString
+	if t.Repeater != nil {
+		encoded, err := json.Marshal(t.Repeater)
+		if err != nil {
+			return fmt.Errorf("encode repeater for task %s: %w", t.UUID, err)
+		}
+		recurrenceRule = sql.NullString{String: string(encoded), Valid: true}
+	}
+
 	// Convert InTrash to integer
 	var inTrash int
 	if t.InTrash {
@@ -180,13 +211,13 @@ func (s *Syncer) saveTask(t *things.Task) error {
 			uuid, type, title, note, status, schedule,
 			scheduled_date, deadline_date, completion_date, creation_date, modification_date,
 			"index", today_index, in_trash, area_uuid, project_uuid, heading_uuid,
-			alarm_time_offset, recurrence_rule, today_index_ref, deleted
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+			alarm_time_offset, recurrence_rule, recurrence_ids, today_index_ref, deleted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
 	`,
 		t.UUID, int(t.Type), t.Title, t.Note, int(t.Status), int(t.Schedule),
 		scheduledDate, deadlineDate, completionDate, creationDate, modificationDate,
 		t.Index, t.TodayIndex, inTrash, areaUUID, projectUUID, headingUUID,
-		alarmTimeOffset, sql.NullString{}, todayIndexRef, // recurrence_rule not directly on Task struct
+		alarmTimeOffset, recurrenceRule, recurrenceIDs, todayIndexRef,
 	)
 	if err != nil {
 		return err

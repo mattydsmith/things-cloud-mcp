@@ -96,6 +96,16 @@ Shows:
 - Today view with reschedule warnings
 - Accountability check for problematic tasks
 
+### parity
+
+Read-only macOS check that compares native Things 3 UUIDs with a running MCP server for Today, Inbox, Anytime, Someday, and Upcoming.
+
+```bash
+go run ./cmd/parity -url http://127.0.0.1:8765
+```
+
+Every view must report `missing=0 extra=0`. The command exits non-zero on a mismatch or unavailable source.
+
 ---
 
 ## Debug & Development Tools

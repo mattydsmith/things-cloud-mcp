@@ -86,10 +86,12 @@ The `st` JSON field maps to the `start` column in Things' SQLite DB. It represen
 | `st` | Constant | + `sr`/`tir` | Things view |
 |------|----------|-------------|-------------|
 | 0 | `TaskScheduleInbox` | null | Inbox |
-| 1 | `TaskScheduleAnytime` | today's date | Today |
-| 1 | `TaskScheduleAnytime` | null | Anytime |
-| 2 | `TaskScheduleSomeday` | future date | Upcoming |
-| 2 | `TaskScheduleSomeday` | null | Someday |
+| 1 | `TaskScheduleAnytime` | before next UTC day | Today and Anytime |
+| 1 | `TaskScheduleAnytime` | null/future | Anytime |
+| 2 | `TaskScheduleSomeday` | future date or repeater rule (`rr`) | Upcoming |
+| 2 | `TaskScheduleSomeday` | standalone, non-recurring, not future | Someday |
+
+These are locally derived views. By default they exclude canceled, deleted, trashed, and hidden-by-parent tasks.
 
 See `docs/client-side-bugs.md` for the full investigation.
 
@@ -100,4 +102,6 @@ The example app and real usage require:
 - `THINGS_PASSWORD` — Things account password
 - `API_KEY` — Bearer token for `/api/*` endpoints (optional, no auth if unset)
 - `PORT` — Server port (default: `8080`)
+- `BIND_ADDR` — Interface to bind (use `127.0.0.1` for a Mac-local service)
+- `DB_PATH` — SQLite mirror path (default: `/data/things.db`)
 - `DEBUG` — Enable verbose HTTP request/response logging when `true`
