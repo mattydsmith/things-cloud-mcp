@@ -137,7 +137,19 @@ Fly.io doesn't bill you if your monthly usage is under $5. The server scales to 
 | `THINGS_PASSWORD` | Yes | Your Things account password |
 | `API_KEY` | No | Bearer token for REST API endpoints (`/api/*`). If unset, no auth required. |
 | `PORT` | No | Server port (default: `8080`) |
+| `BIND_ADDR` | No | Interface to bind. Use `127.0.0.1` for a Mac-only service; default binds all interfaces. |
+| `DB_PATH` | No | SQLite mirror path (default: `/data/things.db`) |
 | `DEBUG` | No | Set to `true` for verbose HTTP logging |
+
+### Mac-local parity check
+
+After the server has completed its initial sync, compare its five core views with native Things 3:
+
+```bash
+go run ./cmd/parity -url http://127.0.0.1:8765
+```
+
+Each line must report `missing=0 extra=0`. The command is read-only and exits non-zero if Things, the server, or any view comparison fails. Run it before changing MCP clients and again after deployment.
 
 ## Updating
 

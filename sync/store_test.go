@@ -122,6 +122,7 @@ func TestTaskStorage(t *testing.T) {
 			ParentTaskIDs:       []string{"project-1"},
 			ActionGroupIDs:      []string{"heading-1"},
 			AlarmTimeOffset:     &alarmOffset,
+			RecurrenceIDs:       []string{"template-1", "template-2"},
 			TagIDs:              []string{"tag-a", "tag-b", "tag-c"},
 		}
 
@@ -170,6 +171,9 @@ func TestTaskStorage(t *testing.T) {
 		}
 		if len(retrieved.TagIDs) != 3 {
 			t.Errorf("TagIDs count mismatch: got %d", len(retrieved.TagIDs))
+		}
+		if len(retrieved.RecurrenceIDs) != 2 || retrieved.RecurrenceIDs[0] != "template-1" || retrieved.RecurrenceIDs[1] != "template-2" {
+			t.Errorf("RecurrenceIDs mismatch: got %v", retrieved.RecurrenceIDs)
 		}
 
 		// Verify dates (compare Unix timestamps to avoid timezone issues)

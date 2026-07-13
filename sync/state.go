@@ -144,114 +144,72 @@ func (st *State) AllTagsWithOpts(opts QueryOpts) ([]*things.Tag, error) {
 
 // TasksInInbox returns tasks in the Inbox
 func (st *State) TasksInInbox(opts QueryOpts) ([]*things.Task, error) {
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 0 AND deleted = 0`
-	args := []any{}
-	if !opts.IncludeCompleted {
-		query += " AND status != 3"
-	}
-	if !opts.IncludeTrashed {
-		query += " AND in_trash = 0"
-	}
-	query += ` ORDER BY "index"`
+	query, args := taskViewQuery(things.TaskScheduleInbox, opts)
+	query += ` ORDER BY t."index"`
 	query, args = paginateQuery(query, args, opts)
 	return st.queryTasks(query, args...)
 }
 
 // TasksInToday returns tasks in the Today view. A task appears in Today when
-// schedule=1 (started/anytime) AND either sr (scheduled_date) or tir
-// (today_index_ref) falls on today's date.
+// schedule=1 (started/anytime) and either sr (scheduled_date) or tir
+// (today_index_ref) falls before the next UTC day boundary. This includes
+// carry-over tasks that Things keeps in Today.
 func (st *State) TasksInToday(opts QueryOpts) ([]*things.Task, error) {
-	todayUnix, tomorrowUnix := currentUTCDayBounds()
+	_, tomorrowUnix := currentUTCDayBounds()
 
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 1
-		AND (
-			(scheduled_date >= ? AND scheduled_date < ?)
-			OR (today_index_ref >= ? AND today_index_ref < ?)
-		) AND deleted = 0`
-	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
-	if !opts.IncludeCompleted {
-		query += " AND status != 3"
-	}
-	if !opts.IncludeTrashed {
-		query += " AND in_trash = 0"
-	}
-	query += ` ORDER BY today_index, "index"`
-	query, args = paginateQuery(query, args, opts)
-
-	st.syncer.mu.RLock()
-	defer st.syncer.mu.RUnlock()
-
-	rows, err := st.executor().Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return st.scanTaskUUIDs(rows)
-}
-
-// TasksInAnytime returns tasks in the Anytime view. A task appears in Anytime
-// when schedule=1 and it is not classified into Today for the current UTC day.
-func (st *State) TasksInAnytime(opts QueryOpts) ([]*things.Task, error) {
-	todayUnix, tomorrowUnix := currentUTCDayBounds()
-
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 1
-		AND NOT (
-			(scheduled_date IS NOT NULL AND scheduled_date >= ? AND scheduled_date < ?)
-			OR (today_index_ref IS NOT NULL AND today_index_ref >= ? AND today_index_ref < ?)
-		) AND deleted = 0`
-	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
-	if !opts.IncludeCompleted {
-		query += " AND status != 3"
-	}
-	if !opts.IncludeTrashed {
-		query += " AND in_trash = 0"
-	}
-	query += ` ORDER BY "index"`
+	query, args := taskViewQuery(things.TaskScheduleAnytime, opts)
+	query += ` AND (
+		(t.scheduled_date IS NOT NULL AND t.scheduled_date < ?)
+		OR (t.today_index_ref IS NOT NULL AND t.today_index_ref < ?)
+	)`
+	args = append(args, tomorrowUnix, tomorrowUnix)
+	query += ` ORDER BY t.today_index, t."index"`
 	query, args = paginateQuery(query, args, opts)
 	return st.queryTasks(query, args...)
 }
 
-// TasksInSomeday returns tasks in the Someday view. A task appears in Someday
-// when schedule=2 and it is not classified into Upcoming at the current time.
+// TasksInAnytime returns all active schedule=1 tasks. Native Things treats
+// Anytime as an inclusive view, so tasks shown in Today also appear here.
+func (st *State) TasksInAnytime(opts QueryOpts) ([]*things.Task, error) {
+	query, args := taskViewQuery(things.TaskScheduleAnytime, opts)
+	query += ` ORDER BY t."index"`
+	query, args = paginateQuery(query, args, opts)
+	return st.queryTasks(query, args...)
+}
+
+// TasksInSomeday returns standalone, non-recurring schedule=2 tasks that are
+// not classified into Upcoming at the current time.
 func (st *State) TasksInSomeday(opts QueryOpts) ([]*things.Task, error) {
 	nowUnix := currentUTCUnix()
 
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 2
+	query, args := taskViewQuery(things.TaskScheduleSomeday, opts)
+	query += ` AND t.project_uuid IS NULL
+		AND t.heading_uuid IS NULL
+		AND t.recurrence_ids IS NULL
 		AND NOT (
-			(scheduled_date IS NOT NULL AND scheduled_date > ?)
-			OR (today_index_ref IS NOT NULL AND today_index_ref > ?)
-		) AND deleted = 0`
-	args := []any{nowUnix, nowUnix}
-	if !opts.IncludeCompleted {
-		query += " AND status != 3"
-	}
-	if !opts.IncludeTrashed {
-		query += " AND in_trash = 0"
-	}
-	query += ` ORDER BY "index"`
+		(t.scheduled_date IS NOT NULL AND t.scheduled_date > ?)
+		OR (t.today_index_ref IS NOT NULL AND t.today_index_ref > ?)
+	)`
+	args = append(args, nowUnix, nowUnix)
+	query += ` ORDER BY t."index"`
 	query, args = paginateQuery(query, args, opts)
 	return st.queryTasks(query, args...)
 }
 
 // TasksInUpcoming returns tasks in the Upcoming view. A task appears in
 // Upcoming when schedule=2 and either sr (scheduled_date) or tir
-// (today_index_ref) is in the future.
+// (today_index_ref) is in the future, or it is a recurring instance.
 func (st *State) TasksInUpcoming(opts QueryOpts) ([]*things.Task, error) {
 	nowUnix := currentUTCUnix()
 
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 2
-		AND (
-			(scheduled_date IS NOT NULL AND scheduled_date > ?)
-			OR (today_index_ref IS NOT NULL AND today_index_ref > ?)
-		) AND deleted = 0`
-	args := []any{nowUnix, nowUnix}
-	if !opts.IncludeCompleted {
-		query += " AND status != 3"
-	}
-	if !opts.IncludeTrashed {
-		query += " AND in_trash = 0"
-	}
-	query += ` ORDER BY COALESCE(scheduled_date, today_index_ref), "index"`
+	query, args := taskViewQuery(things.TaskScheduleSomeday, opts)
+	query += ` AND (
+		(t.scheduled_date IS NOT NULL AND t.scheduled_date > ?)
+		OR (t.today_index_ref IS NOT NULL AND t.today_index_ref > ?)
+		OR t.recurrence_ids IS NOT NULL
+	)`
+	args = append(args, nowUnix, nowUnix)
+	query += ` ORDER BY COALESCE(t.scheduled_date, t.today_index_ref), t."index"`
 	query, args = paginateQuery(query, args, opts)
 	return st.queryTasks(query, args...)
 }
@@ -381,6 +339,39 @@ func currentUTCDayBounds() (int64, int64) {
 
 func currentUTCUnix() int64 {
 	return time.Now().UTC().Unix()
+}
+
+func taskViewQuery(schedule things.TaskSchedule, opts QueryOpts) (string, []any) {
+	query := `SELECT t.uuid FROM tasks t
+		LEFT JOIN tasks p ON p.uuid = t.project_uuid
+		LEFT JOIN tasks h ON h.uuid = t.heading_uuid
+		LEFT JOIN tasks hp ON hp.uuid = h.project_uuid
+		WHERE t.type = 0 AND t.schedule = ? AND t.deleted = 0`
+	args := []any{int(schedule)}
+
+	if opts.IncludeCompleted {
+		query += " AND t.status IN (?, ?)"
+		args = append(args, int(things.TaskStatusPending), int(things.TaskStatusCompleted))
+	} else {
+		query += " AND t.status = ?"
+		args = append(args, int(things.TaskStatusPending))
+	}
+
+	if !opts.IncludeTrashed {
+		query += ` AND t.in_trash = 0
+			AND (t.project_uuid IS NULL OR (p.status = ? AND p.deleted = 0 AND p.in_trash = 0))
+			AND (t.heading_uuid IS NULL OR (
+				h.status = ? AND h.deleted = 0 AND h.in_trash = 0
+				AND (h.project_uuid IS NULL OR (hp.status = ? AND hp.deleted = 0 AND hp.in_trash = 0))
+			))`
+		args = append(args,
+			int(things.TaskStatusPending),
+			int(things.TaskStatusPending),
+			int(things.TaskStatusPending),
+		)
+	}
+
+	return query, args
 }
 
 func paginateQuery(query string, args []any, opts QueryOpts) (string, []any) {

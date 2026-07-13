@@ -275,6 +275,69 @@ func TestTasksInTodayWithTIR(t *testing.T) {
 		TodayIndexReference: &yesterday,
 	})
 	syncer.saveTask(&things.Task{
+		UUID:          "canceled-today",
+		Title:         "Canceled Today",
+		Status:        things.TaskStatusCanceled,
+		Schedule:      things.TaskScheduleAnytime,
+		ScheduledDate: &today,
+	})
+	syncer.saveTask(&things.Task{
+		UUID:     "trashed-project",
+		Title:    "Trashed Project",
+		Type:     things.TaskTypeProject,
+		Status:   things.TaskStatusPending,
+		Schedule: things.TaskScheduleAnytime,
+		InTrash:  true,
+	})
+	syncer.saveTask(&things.Task{
+		UUID:          "task-in-trashed-project",
+		Title:         "Task in Trashed Project",
+		Status:        things.TaskStatusPending,
+		Schedule:      things.TaskScheduleAnytime,
+		ScheduledDate: &today,
+		ParentTaskIDs: []string{"trashed-project"},
+	})
+	syncer.saveTask(&things.Task{
+		UUID:          "heading-in-trashed-project",
+		Title:         "Heading in Trashed Project",
+		Type:          things.TaskTypeHeading,
+		Status:        things.TaskStatusPending,
+		Schedule:      things.TaskScheduleAnytime,
+		ParentTaskIDs: []string{"trashed-project"},
+	})
+	syncer.saveTask(&things.Task{
+		UUID:                "task-under-hidden-heading",
+		Title:               "Task Under Hidden Heading",
+		Status:              things.TaskStatusPending,
+		Schedule:            things.TaskScheduleAnytime,
+		TodayIndexReference: &today,
+		ActionGroupIDs:      []string{"heading-in-trashed-project"},
+	})
+	syncer.saveTask(&things.Task{
+		UUID:          "task-in-missing-project",
+		Title:         "Task in Missing Project",
+		Status:        things.TaskStatusPending,
+		Schedule:      things.TaskScheduleAnytime,
+		ScheduledDate: &today,
+		ParentTaskIDs: []string{"missing-project"},
+	})
+	syncer.saveTask(&things.Task{
+		UUID:          "heading-in-missing-project",
+		Title:         "Heading in Missing Project",
+		Type:          things.TaskTypeHeading,
+		Status:        things.TaskStatusPending,
+		Schedule:      things.TaskScheduleAnytime,
+		ParentTaskIDs: []string{"missing-project"},
+	})
+	syncer.saveTask(&things.Task{
+		UUID:                "task-under-orphan-heading",
+		Title:               "Task Under Orphan Heading",
+		Status:              things.TaskStatusPending,
+		Schedule:            things.TaskScheduleAnytime,
+		TodayIndexReference: &today,
+		ActionGroupIDs:      []string{"heading-in-missing-project"},
+	})
+	syncer.saveTask(&things.Task{
 		UUID:     "no-dates",
 		Title:    "No Dates",
 		Status:   things.TaskStatusPending,
@@ -298,14 +361,14 @@ func TestTasksInTodayWithTIR(t *testing.T) {
 		got[task.UUID] = true
 	}
 
-	expected := []string{"sr-only", "tir-only", "both-today", "sr-old-tir-today", "sr-today-tir-old"}
+	expected := []string{"sr-only", "tir-only", "both-today", "sr-old-tir-today", "sr-today-tir-old", "both-old"}
 	for _, uuid := range expected {
 		if !got[uuid] {
 			t.Errorf("expected task %q in Today, but not found", uuid)
 		}
 	}
 
-	notExpected := []string{"both-old", "no-dates", "inbox-with-tir"}
+	notExpected := []string{"canceled-today", "task-in-trashed-project", "task-under-hidden-heading", "task-in-missing-project", "task-under-orphan-heading", "no-dates", "inbox-with-tir"}
 	for _, uuid := range notExpected {
 		if got[uuid] {
 			t.Errorf("task %q should NOT be in Today", uuid)
@@ -314,6 +377,28 @@ func TestTasksInTodayWithTIR(t *testing.T) {
 
 	if len(tasks) != len(expected) {
 		t.Errorf("expected %d tasks in Today, got %d", len(expected), len(tasks))
+	}
+
+	anytimeTasks, err := syncer.State().TasksInAnytime(QueryOpts{})
+	if err != nil {
+		t.Fatalf("TasksInAnytime failed: %v", err)
+	}
+	anytimeGot := make(map[string]bool, len(anytimeTasks))
+	for _, task := range anytimeTasks {
+		anytimeGot[task.UUID] = true
+	}
+	if !anytimeGot["no-dates"] {
+		t.Error("expected undated task in Anytime")
+	}
+	for _, uuid := range expected {
+		if !anytimeGot[uuid] {
+			t.Errorf("Today task %q should also be in inclusive Anytime", uuid)
+		}
+	}
+	for _, uuid := range []string{"canceled-today", "task-in-trashed-project", "task-under-hidden-heading", "task-in-missing-project", "task-under-orphan-heading"} {
+		if anytimeGot[uuid] {
+			t.Errorf("hidden task %q should NOT be in Anytime", uuid)
+		}
 	}
 }
 
@@ -588,6 +673,9 @@ func TestStateQueries(t *testing.T) {
 	syncer.saveTask(&things.Task{UUID: "today-ref-1", Title: "Today via tir", Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusPending, TodayIndexReference: &todayRef})
 	syncer.saveTask(&things.Task{UUID: "someday-1", Title: "Someday Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending})
 	syncer.saveTask(&things.Task{UUID: "someday-past-1", Title: "Someday Past Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, ScheduledDate: &pastRef})
+	syncer.saveTask(&things.Task{UUID: "someday-project", Title: "Someday Project", Type: things.TaskTypeProject, Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusPending})
+	syncer.saveTask(&things.Task{UUID: "someday-project-task", Title: "Deferred Project Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, ParentTaskIDs: []string{"someday-project"}})
+	syncer.saveTask(&things.Task{UUID: "recurring-upcoming-1", Title: "Recurring Upcoming Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, RecurrenceIDs: []string{"template-1"}})
 	syncer.saveTask(&things.Task{UUID: "upcoming-1", Title: "Upcoming Task", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, ScheduledDate: &futureRef})
 	syncer.saveTask(&things.Task{UUID: "upcoming-ref-1", Title: "Upcoming via tir", Schedule: things.TaskScheduleSomeday, Status: things.TaskStatusPending, TodayIndexReference: &futureRef})
 	syncer.saveTask(&things.Task{UUID: "completed-1", Title: "Completed Task", Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusCompleted, CompletionDate: &completedAtRecent})
@@ -641,8 +729,8 @@ func TestStateQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AllProjects failed: %v", err)
 		}
-		if len(projects) != 1 {
-			t.Errorf("expected 1 project, got %d", len(projects))
+		if len(projects) != 2 {
+			t.Errorf("expected 2 projects, got %d", len(projects))
 		}
 		if projects[0].Type != things.TaskTypeProject {
 			t.Error("returned task is not a project")
@@ -662,16 +750,22 @@ func TestStateQueries(t *testing.T) {
 		}
 	})
 
-	t.Run("TasksInAnytime returns undated anytime tasks", func(t *testing.T) {
+	t.Run("TasksInAnytime includes both undated and Today tasks", func(t *testing.T) {
 		tasks, err := state.TasksInAnytime(QueryOpts{})
 		if err != nil {
 			t.Fatalf("TasksInAnytime failed: %v", err)
 		}
-		if len(tasks) != 1 {
-			t.Fatalf("expected 1 anytime task, got %d", len(tasks))
+		if len(tasks) != 2 {
+			t.Fatalf("expected 2 anytime tasks, got %d", len(tasks))
 		}
-		if tasks[0].UUID != "anytime-1" {
-			t.Fatalf("expected anytime-1, got %s", tasks[0].UUID)
+		got := map[string]bool{}
+		for _, task := range tasks {
+			got[task.UUID] = true
+		}
+		for _, uuid := range []string{"anytime-1", "today-ref-1"} {
+			if !got[uuid] {
+				t.Errorf("expected %s in Anytime", uuid)
+			}
 		}
 	})
 
@@ -693,11 +787,17 @@ func TestStateQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TasksInUpcoming failed: %v", err)
 		}
-		if len(tasks) != 2 {
-			t.Fatalf("expected 2 upcoming tasks, got %d", len(tasks))
+		if len(tasks) != 3 {
+			t.Fatalf("expected 3 upcoming tasks, got %d", len(tasks))
 		}
-		if tasks[0].UUID != "upcoming-1" || tasks[1].UUID != "upcoming-ref-1" {
-			t.Fatalf("unexpected upcoming tasks: %s, %s", tasks[0].UUID, tasks[1].UUID)
+		got := map[string]bool{}
+		for _, task := range tasks {
+			got[task.UUID] = true
+		}
+		for _, uuid := range []string{"upcoming-1", "upcoming-ref-1", "recurring-upcoming-1"} {
+			if !got[uuid] {
+				t.Errorf("expected %s in Upcoming", uuid)
+			}
 		}
 	})
 

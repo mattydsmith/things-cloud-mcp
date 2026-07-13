@@ -109,6 +109,9 @@ func TestOpen(t *testing.T) {
 		if err := syncer.saveSyncState("history-1", 7); err != nil {
 			t.Fatalf("saveSyncState failed: %v", err)
 		}
+		if _, err := syncer.db.Exec(`ALTER TABLE tasks DROP COLUMN recurrence_ids`); err != nil {
+			t.Fatalf("restore v3 tasks schema failed: %v", err)
+		}
 		if _, err := syncer.db.Exec(`UPDATE schema_version SET version = 3`); err != nil {
 			t.Fatalf("downgrade schema version failed: %v", err)
 		}

@@ -89,8 +89,8 @@ Once sync completes, the endpoint reads from the local `sync.State()` API.
 Examples:
 
 - Inbox is a SQL query over tasks with `schedule = 0`
-- Today is a SQL query over tasks with `schedule = 1` and today's `scheduled_date` or `today_index_ref`
-- Anytime, Someday, and Upcoming are **derived locally** from schedule/date fields in the synced task rows
+- Today is a SQL query over active `schedule = 1` tasks whose `scheduled_date` or `today_index_ref` is earlier than the next UTC day boundary. This preserves Things carry-over behavior.
+- Anytime, Someday, and Upcoming are **derived locally** from schedule, date, placement, visibility, and recurrence fields in the synced task rows.
 
 There is no separate Things Cloud "Anytime endpoint" or "Someday endpoint". Those views are computed from synced history state.
 
@@ -98,9 +98,11 @@ There is no separate Things Cloud "Anytime endpoint" or "Someday endpoint". Thos
 
 The new dedicated queries are still based on the same underlying task fields:
 
-- **Anytime**: `schedule = 1` and not classified into Today
-- **Someday**: `schedule = 2` and not future-dated
-- **Upcoming**: `schedule = 2` with a future `scheduled_date` or `today_index_ref`
+- **Anytime**: all active `schedule = 1` tasks. Native Things treats this as an inclusive view, so Today tasks also appear here.
+- **Someday**: standalone, non-recurring `schedule = 2` tasks that are not future-dated.
+- **Upcoming**: active `schedule = 2` tasks with a future `scheduled_date` or `today_index_ref`, plus repeating templates carrying a repeater rule (`rr`). Generated instances link back through `rt` and are not automatically Upcoming.
+
+All five core views exclude canceled, deleted, trashed, and hidden-by-parent tasks by default.
 
 So these read endpoints are best understood as:
 

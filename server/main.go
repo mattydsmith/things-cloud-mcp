@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,6 +34,17 @@ type shutdownServer interface {
 }
 
 const shutdownTimeout = 10 * time.Second
+
+func serverAddress(bindAddress, port string) string {
+	return net.JoinHostPort(bindAddress, port)
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
 
 func jsonResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -377,16 +389,15 @@ func main() {
 		log.Fatal("THINGS_USERNAME and THINGS_PASSWORD must be set")
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	port := envOrDefault("PORT", "8080")
+	bindAddress := os.Getenv("BIND_ADDR")
 
 	client = things.New(things.APIEndpoint, username, password)
 	client.Debug = os.Getenv("DEBUG") == "true"
 
+	dbPath := envOrDefault("DB_PATH", "/data/things.db")
 	var err error
-	syncer, err = sync.Open("/data/things.db", client)
+	syncer, err = sync.Open(dbPath, client)
 	if err != nil {
 		log.Fatalf("failed to open sync database: %v", err)
 	}
@@ -561,9 +572,10 @@ func main() {
 
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	server := &http.Server{Addr: ":" + port}
+	address := serverAddress(bindAddress, port)
+	server := &http.Server{Addr: address}
 
-	log.Printf("Starting server on :%s", port)
+	log.Printf("Starting server on %s", address)
 	if err := serveWithGracefulShutdown(shutdownCtx, server, shutdownTimeout); err != nil {
 		log.Fatal(err)
 	}
