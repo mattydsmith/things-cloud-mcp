@@ -298,14 +298,16 @@ func TestTasksInTodayWithTIR(t *testing.T) {
 		got[task.UUID] = true
 	}
 
-	expected := []string{"sr-only", "tir-only", "both-today", "sr-old-tir-today", "sr-today-tir-old"}
+	// "both-old" is scheduled entirely in the past. Things rolls overdue tasks
+	// forward into Today rather than hiding them, so it belongs here too.
+	expected := []string{"sr-only", "tir-only", "both-today", "sr-old-tir-today", "sr-today-tir-old", "both-old"}
 	for _, uuid := range expected {
 		if !got[uuid] {
 			t.Errorf("expected task %q in Today, but not found", uuid)
 		}
 	}
 
-	notExpected := []string{"both-old", "no-dates", "inbox-with-tir"}
+	notExpected := []string{"no-dates", "inbox-with-tir"}
 	for _, uuid := range notExpected {
 		if got[uuid] {
 			t.Errorf("task %q should NOT be in Today", uuid)
