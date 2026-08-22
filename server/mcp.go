@@ -1117,7 +1117,7 @@ func newMCPHandler() http.Handler {
 			mcp.Description("Comma-separated tag UUIDs"),
 		),
 		mcp.WithString("repeat",
-			mcp.Description("Recurrence rule. Accepts: 'daily', 'weekly', 'monthly', 'yearly', or 'every N days/weeks/months/years'. Append 'until YYYY-MM-DD' for an inclusive end date and/or 'after completion' for repeat-after-completion mode (e.g. 'daily until 2026-02-24 after completion'). Weekly defaults to the current weekday, monthly to the current day of month. Repeating tasks cannot be created in inbox."),
+			mcp.Description("UNSUPPORTED — do not use. Recurrence rules sent through this parameter have been reported to corrupt/crash Things clients on macOS and iOS and are rejected by the server (see docs/known-issues/repeat-disabled.md). Create the task without 'repeat' and set up the recurrence manually inside the Things app."),
 		),
 	), mcpCreateTask)
 
@@ -1160,7 +1160,7 @@ func newMCPHandler() http.Handler {
 			mcp.Description("New comma-separated tag UUIDs (replaces existing)"),
 		),
 		mcp.WithString("repeat",
-			mcp.Description("Recurrence rule. Accepts: 'daily', 'weekly', 'monthly', 'yearly', 'every N days/weeks/months/years', or 'none' to clear. Append 'until YYYY-MM-DD' for an inclusive end date and/or 'after completion' for repeat-after-completion mode. Repeating tasks cannot be moved to inbox."),
+			mcp.Description("UNSUPPORTED — do not use to set or change a recurrence rule; any value other than 'none' is rejected by the server (see docs/known-issues/repeat-disabled.md) because it has been reported to corrupt/crash Things clients on macOS and iOS. Passing 'none' to clear an existing repeat rule on a task is still allowed. Set up recurrence manually inside the Things app instead."),
 		),
 	), mcpEditTask)
 
