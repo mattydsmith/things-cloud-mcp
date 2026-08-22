@@ -78,7 +78,7 @@ func formatTask(t *things.Task) taskOutput {
 	case things.TaskTypeHeading:
 		o.Type = "heading"
 	}
-	if t.DeadlineDate != nil {
+	if t.DeadlineDate != nil && t.DeadlineDate.Year() < things.NeverendingRepeatYear {
 		o.Deadline = t.DeadlineDate.Format("2006-01-02")
 	}
 	if t.CompletionDate != nil {
@@ -890,7 +890,7 @@ func newMCPHandler() http.Handler {
 	// --- Read tools ---
 
 	s.AddTool(mcp.NewTool("things_list_today",
-		mcp.WithDescription("List tasks scheduled for today in Things"),
+		mcp.WithDescription("List the Things Today view: tasks scheduled for today, overdue carry-over tasks, and tasks with a deadline due today or earlier. \"Today\" is evaluated as the server's UTC calendar day, not the caller's local timezone."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of tasks to return"),

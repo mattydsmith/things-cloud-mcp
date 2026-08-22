@@ -48,7 +48,7 @@ Once connected, Claude can do pretty much everything you'd do in the Things app:
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `things_list_today` | Tasks scheduled for today | `limit`, `offset` |
+| `things_list_today` | Today view: tasks scheduled for today, overdue carry-over, and tasks with a deadline due today or earlier | `limit`, `offset` |
 | `things_list_inbox` | Tasks in the inbox | `limit`, `offset` |
 | `things_list_anytime` | Tasks in Anytime | `limit`, `offset` |
 | `things_list_someday` | Tasks in Someday | `limit`, `offset` |
