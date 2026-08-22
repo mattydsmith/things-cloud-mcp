@@ -287,6 +287,35 @@ func TestTasksInTodayWithTIR(t *testing.T) {
 		Schedule:            things.TaskScheduleInbox,
 		TodayIndexReference: &today,
 	})
+	syncer.saveTask(&things.Task{
+		UUID:         "anytime-deadline-today",
+		Title:        "Anytime Deadline Today",
+		Status:       things.TaskStatusPending,
+		Schedule:     things.TaskScheduleAnytime,
+		DeadlineDate: &today,
+	})
+	syncer.saveTask(&things.Task{
+		UUID:         "someday-deadline-today",
+		Title:        "Someday Deadline Today",
+		Status:       things.TaskStatusPending,
+		Schedule:     things.TaskScheduleSomeday,
+		DeadlineDate: &today,
+	})
+	nextWeek := today.Add(7 * 24 * time.Hour)
+	syncer.saveTask(&things.Task{
+		UUID:         "someday-deadline-future",
+		Title:        "Someday Deadline Future",
+		Status:       things.TaskStatusPending,
+		Schedule:     things.TaskScheduleSomeday,
+		DeadlineDate: &nextWeek,
+	})
+	syncer.saveTask(&things.Task{
+		UUID:         "inbox-deadline-today",
+		Title:        "Inbox Deadline Today",
+		Status:       things.TaskStatusPending,
+		Schedule:     things.TaskScheduleInbox,
+		DeadlineDate: &today,
+	})
 
 	tasks, err := syncer.State().TasksInToday(QueryOpts{})
 	if err != nil {
@@ -298,14 +327,18 @@ func TestTasksInTodayWithTIR(t *testing.T) {
 		got[task.UUID] = true
 	}
 
-	expected := []string{"sr-only", "tir-only", "both-today", "sr-old-tir-today", "sr-today-tir-old"}
+	expected := []string{
+		"sr-only", "tir-only", "both-today", "sr-old-tir-today", "sr-today-tir-old",
+		"both-old",                                         // overdue carry-over: schedule=1 with a past scheduled_date stays in Today
+		"anytime-deadline-today", "someday-deadline-today", // deadline due today, additive inclusion
+	}
 	for _, uuid := range expected {
 		if !got[uuid] {
 			t.Errorf("expected task %q in Today, but not found", uuid)
 		}
 	}
 
-	notExpected := []string{"both-old", "no-dates", "inbox-with-tir"}
+	notExpected := []string{"no-dates", "inbox-with-tir", "someday-deadline-future", "inbox-deadline-today"}
 	for _, uuid := range notExpected {
 		if got[uuid] {
 			t.Errorf("task %q should NOT be in Today", uuid)
@@ -594,16 +627,47 @@ func TestStateQueries(t *testing.T) {
 	syncer.saveTask(&things.Task{UUID: "completed-2", Title: "Older Completed Task", Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusCompleted, CompletionDate: &completedAtOlder})
 	syncer.saveTask(&things.Task{UUID: "trashed-1", Title: "Trashed Task", InTrash: true})
 	syncer.saveTask(&things.Task{UUID: "project-1", Title: "Test Project", Type: things.TaskTypeProject})
+	syncer.saveTask(&things.Task{UUID: "canceled-inbox-1", Title: "Canceled Inbox", Schedule: things.TaskScheduleInbox, Status: things.TaskStatusCanceled})
+	syncer.saveTask(&things.Task{UUID: "canceled-anytime-1", Title: "Canceled Anytime", Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusCanceled})
+	syncer.saveTask(&things.Task{UUID: "canceled-today-1", Title: "Canceled Today", Schedule: things.TaskScheduleAnytime, Status: things.TaskStatusCanceled, TodayIndexReference: &todayRef})
 
 	state := syncer.State()
 
-	t.Run("TasksInInbox excludes completed by default", func(t *testing.T) {
+	t.Run("TasksInInbox excludes completed and canceled by default", func(t *testing.T) {
 		tasks, err := state.TasksInInbox(QueryOpts{})
 		if err != nil {
 			t.Fatalf("TasksInInbox failed: %v", err)
 		}
 		if len(tasks) != 1 {
 			t.Errorf("expected 1 inbox task, got %d", len(tasks))
+		}
+	})
+
+	t.Run("AllTasks excludes canceled by default", func(t *testing.T) {
+		tasks, err := state.AllTasks(QueryOpts{})
+		if err != nil {
+			t.Fatalf("AllTasks failed: %v", err)
+		}
+		for _, task := range tasks {
+			if task.Status == things.TaskStatusCanceled {
+				t.Errorf("canceled task %q should be excluded by default", task.UUID)
+			}
+		}
+	})
+
+	t.Run("AllTasks includes canceled when IncludeCompleted requested", func(t *testing.T) {
+		tasks, err := state.AllTasks(QueryOpts{IncludeCompleted: true})
+		if err != nil {
+			t.Fatalf("AllTasks failed: %v", err)
+		}
+		found := false
+		for _, task := range tasks {
+			if task.UUID == "canceled-inbox-1" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected canceled-inbox-1 to be included when IncludeCompleted is true")
 		}
 	})
 

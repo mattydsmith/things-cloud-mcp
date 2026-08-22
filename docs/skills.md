@@ -26,7 +26,7 @@ A skill for morning reviews and day-to-day task management. Tell Claude:
 - **Your tag system** — what each tag means and its UUID (the MCP requires UUIDs, not names)
 - **How you schedule** — do you use `when` as a soft target or a hard commitment? What's the difference between `when` and `deadline` in your workflow?
 - **Morning review steps** — what you want to see each morning (today's tasks, overdue items, inbox count)
-- **Overdue detection** — `things_list_today` only returns tasks with today's exact date. To catch overdue items, also call `things_list_all_tasks` and filter for tasks where `scheduled_for < today` and `status == "open"`
+- **Overdue and deadline detection** — `things_list_today` includes overdue carry-over (Anytime tasks whose scheduled date has passed) and tasks with a deadline due today or earlier, in addition to tasks scheduled for today. No separate workaround call is needed for these. Note that `things_list_today`'s "today" boundary is the server's UTC calendar day, not your local timezone — near midnight local time this can be off by up to a day.
 
 ### 2. Weekly/monthly review skill
 
@@ -106,8 +106,6 @@ description: |
 ## Tips
 
 - **Start simple.** Begin with just your project/tag UUIDs and a basic morning review flow. Iterate after a few days of use.
-- **Include the overdue workaround.** `things_list_today` misses overdue tasks — your skill should instruct Claude to make two calls and deduplicate.
 - **Specify UUID format for tags.** The MCP only accepts tag UUIDs. Your skill needs to map human-readable tag names to UUIDs so Claude uses the right ones.
-- **Filter by status.** `things_list_all_tasks` returns completed and canceled tasks too. Always remind Claude to filter for `status == "open"`.
 - **Explain your scheduling philosophy.** The difference between `when` and `deadline` varies by person. Be explicit about how you use them.
 - **Add communication preferences.** Do you want brief summaries or detailed breakdowns? Should Claude suggest rewrites for vague tasks? Should it celebrate completed tasks or just move on?

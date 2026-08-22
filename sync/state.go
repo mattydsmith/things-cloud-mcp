@@ -23,6 +23,10 @@ func (st *State) executor() dbExecutor {
 
 // QueryOpts controls filtering for state queries
 type QueryOpts struct {
+	// IncludeCompleted, when false (the default), excludes both completed and
+	// canceled tasks. Things treats canceled the same as completed for the
+	// purpose of active-task views — neither has a dedicated "include
+	// canceled" toggle, so this flag governs both.
 	IncludeCompleted bool
 	IncludeTrashed   bool
 	Limit            int
@@ -55,7 +59,7 @@ func (st *State) AllTasks(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -70,7 +74,7 @@ func (st *State) AllProjects(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 1 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -147,7 +151,7 @@ func (st *State) TasksInInbox(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 0 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -157,20 +161,32 @@ func (st *State) TasksInInbox(opts QueryOpts) ([]*things.Task, error) {
 	return st.queryTasks(query, args...)
 }
 
-// TasksInToday returns tasks in the Today view. A task appears in Today when
-// schedule=1 (started/anytime) AND either sr (scheduled_date) or tir
-// (today_index_ref) falls on today's date.
+// TasksInToday returns tasks in the Today view. A task appears in Today when:
+//   - schedule=1 (started/anytime) AND sr (scheduled_date) is today or in the
+//     past (overdue carry-over — Things keeps showing an Anytime-scheduled
+//     task in Today until it's dealt with, not just on its exact date), OR
+//   - schedule=1 AND tir (today_index_ref) falls on today's date (explicit
+//     manual placement into Today), OR
+//   - schedule is not Inbox AND it has a deadline that is today or overdue.
+//
+// Deadline-driven inclusion is additive only: a Someday/Upcoming task pulled
+// into Today by an overdue deadline still also appears in
+// TasksInSomeday/TasksInUpcoming — Things' real cross-list behavior for that
+// case is not verified here, so this does not attempt to remove it from its
+// other list. Within schedule=1, Today and Anytime are still kept as a strict
+// partition (see TasksInAnytime).
 func (st *State) TasksInToday(opts QueryOpts) ([]*things.Task, error) {
 	todayUnix, tomorrowUnix := currentUTCDayBounds()
 
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 1
+	query := `SELECT uuid FROM tasks WHERE type = 0 AND deleted = 0
 		AND (
-			(scheduled_date >= ? AND scheduled_date < ?)
-			OR (today_index_ref >= ? AND today_index_ref < ?)
-		) AND deleted = 0`
-	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
+			(schedule = 1 AND scheduled_date < ?)
+			OR (schedule = 1 AND today_index_ref >= ? AND today_index_ref < ?)
+			OR (schedule != 0 AND deadline_date IS NOT NULL AND deadline_date < ?)
+		)`
+	args := []any{tomorrowUnix, todayUnix, tomorrowUnix, tomorrowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -190,18 +206,20 @@ func (st *State) TasksInToday(opts QueryOpts) ([]*things.Task, error) {
 }
 
 // TasksInAnytime returns tasks in the Anytime view. A task appears in Anytime
-// when schedule=1 and it is not classified into Today for the current UTC day.
+// when schedule=1 and it is not classified into Today (see TasksInToday) —
+// kept as the strict complement of TasksInToday within schedule=1.
 func (st *State) TasksInAnytime(opts QueryOpts) ([]*things.Task, error) {
 	todayUnix, tomorrowUnix := currentUTCDayBounds()
 
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 1
 		AND NOT (
-			(scheduled_date IS NOT NULL AND scheduled_date >= ? AND scheduled_date < ?)
+			(scheduled_date IS NOT NULL AND scheduled_date < ?)
 			OR (today_index_ref IS NOT NULL AND today_index_ref >= ? AND today_index_ref < ?)
+			OR (deadline_date IS NOT NULL AND deadline_date < ?)
 		) AND deleted = 0`
-	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
+	args := []any{tomorrowUnix, todayUnix, tomorrowUnix, tomorrowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -223,7 +241,7 @@ func (st *State) TasksInSomeday(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{nowUnix, nowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -246,7 +264,7 @@ func (st *State) TasksInUpcoming(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{nowUnix, nowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -261,7 +279,7 @@ func (st *State) TasksInProject(projectUUID string, opts QueryOpts) ([]*things.T
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND project_uuid = ? AND deleted = 0`
 	args := []any{projectUUID}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -285,7 +303,7 @@ func (st *State) TasksInArea(areaUUID string, opts QueryOpts) ([]*things.Task, e
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND area_uuid = ? AND deleted = 0`
 	args := []any{areaUUID}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"

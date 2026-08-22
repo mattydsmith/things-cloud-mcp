@@ -70,4 +70,58 @@ func TestFormatTaskJSONShape(t *testing.T) {
 			t.Fatal("did not expect today_index_ref in output")
 		}
 	})
+
+	t.Run("normalizes the never-ending sentinel deadline to absent", func(t *testing.T) {
+		t.Parallel()
+
+		sentinel := time.Date(things.NeverendingRepeatYear, time.January, 1, 0, 0, 0, 0, time.UTC)
+		task := &things.Task{
+			UUID:         "task-3",
+			Title:        "Task with sentinel deadline",
+			Status:       things.TaskStatusPending,
+			Type:         things.TaskTypeTask,
+			DeadlineDate: &sentinel,
+		}
+
+		b, err := json.Marshal(formatTask(task))
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+
+		var got map[string]any
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+
+		if _, ok := got["deadline"]; ok {
+			t.Fatalf("did not expect deadline in output for sentinel date, got %v", got["deadline"])
+		}
+	})
+
+	t.Run("includes a real deadline", func(t *testing.T) {
+		t.Parallel()
+
+		deadline := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
+		task := &things.Task{
+			UUID:         "task-4",
+			Title:        "Task with real deadline",
+			Status:       things.TaskStatusPending,
+			Type:         things.TaskTypeTask,
+			DeadlineDate: &deadline,
+		}
+
+		b, err := json.Marshal(formatTask(task))
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+
+		var got map[string]any
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+
+		if got["deadline"] != "2026-03-10" {
+			t.Fatalf("expected deadline 2026-03-10, got %v", got["deadline"])
+		}
+	})
 }
