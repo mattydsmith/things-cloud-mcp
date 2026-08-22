@@ -69,12 +69,12 @@ Once connected, Claude can do pretty much everything you'd do in the Things app:
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `things_create_task` | Create a task | `title` (req), `note`, `when`, `deadline`, `project`, `parent_task`, `tags`, `repeat` |
+| `things_create_task` | Create a task | `title` (req), `note`, `when`, `deadline`, `project`, `parent_task`, `tags`, `repeat` (unsupported, see below) |
 | `things_create_project` | Create a project | `title` (req), `note`, `when`, `deadline`, `area` |
 | `things_create_heading` | Create a heading in a project | `title` (req), `project` |
 | `things_create_area` | Create an area | `title` (req), `tags` |
 | `things_create_tag` | Create a tag | `title` (req), `shorthand`, `parent` |
-| `things_edit_task` | Edit a task | `uuid` (req), `title`, `note`, `when`, `deadline`, `project`, `parent_task`, `area`, `tags`, `repeat` |
+| `things_edit_task` | Edit a task | `uuid` (req), `title`, `note`, `when`, `deadline`, `project`, `parent_task`, `area`, `tags`, `repeat` (unsupported, see below) |
 | `things_complete_task` | Complete a task | `uuid` |
 | `things_uncomplete_task` | Reopen a completed task | `uuid` |
 | `things_trash_task` | Move to trash | `uuid` |
@@ -125,7 +125,16 @@ Once connected, Claude can do pretty much everything you'd do in the Things app:
 | `YYYY-MM-DD` | Set a hard deadline |
 | `none` | Clear an existing deadline (edit only) |
 
-#### `repeat` — Recurring tasks
+#### `repeat` — Recurring tasks (currently disabled)
+
+**`repeat` is rejected with an error on both `things_create_task` and `things_edit_task`.**
+Setting a recurrence rule through this API has been reported to corrupt Things Cloud history and
+crash Things 3 on macOS and iOS, with no local recovery path on iOS. See
+[`docs/known-issues/repeat-disabled.md`](docs/known-issues/repeat-disabled.md) for the full
+investigation and what's needed to re-enable it.
+
+`repeat: "none"` on `things_edit_task` still works, to clear a recurrence rule from an existing
+task. Everything else below describes the disabled format for reference:
 
 | Value | Effect |
 |-------|--------|

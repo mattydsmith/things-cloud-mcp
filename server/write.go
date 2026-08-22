@@ -352,13 +352,19 @@ type UUIDRequest struct {
 // Repeat rule builder
 // ---------------------------------------------------------------------------
 
+// repeatValueRequestsRule reports whether repeat asks for an actual recurrence
+// (i.e. is not empty and not the explicit "none" no-op sentinel).
+func repeatValueRequestsRule(repeat string) bool {
+	return repeat != "" && repeat != "none"
+}
+
 // buildRepeatRule builds a RepeaterConfiguration JSON from a repeat string.
 // Formats: "daily", "weekly", "monthly", "yearly", "every N days/weeks/months/years"
 // Optional end date: append "until YYYY-MM-DD".
 // Append " after completion" for repeat-after-completion mode (tp=1).
 // Returns nil if repeat is empty.
 func buildRepeatRule(repeat string, refDate time.Time) (*json.RawMessage, error) {
-	if repeat == "" || repeat == "none" {
+	if !repeatValueRequestsRule(repeat) {
 		return nil, nil
 	}
 
@@ -579,6 +585,13 @@ func createTask(req CreateTaskRequest) (string, error) {
 		st = 0 // inbox
 	}
 
+	// TODO(docs/known-issues/repeat-disabled.md): repeat rules are temporarily
+	// disabled as a safety precaution; remove this block (the logic below is
+	// left intact) once the payload has been confirmed safe.
+	if repeatValueRequestsRule(req.Repeat) {
+		return "", invalidInputf("the 'repeat' parameter is currently unsupported: sending a recurrence rule through this API has been reported to corrupt/crash Things clients on macOS and iOS; do not use it until this is resolved (see docs/known-issues/repeat-disabled.md). Create the task without 'repeat' and add the recurrence manually in Things.")
+	}
+
 	// Repeating tasks must be triaged; Things behaves inconsistently when repeat+inbox is sent.
 	if req.Repeat != "" {
 		if req.When == "inbox" {
@@ -693,6 +706,16 @@ func editTask(req EditTaskRequest) error {
 	}
 
 	u := newTaskUpdate()
+
+	// TODO(docs/known-issues/repeat-disabled.md): repeat rules are temporarily
+	// disabled as a safety precaution; remove this block once the payload has
+	// been confirmed safe. repeat:"none" (clear an existing rule) is
+	// intentionally still allowed — it only nils out "rr", same as a task
+	// with no rule at all.
+	if repeatValueRequestsRule(req.Repeat) {
+		return invalidInputf("the 'repeat' parameter is currently unsupported: sending a recurrence rule through this API has been reported to corrupt/crash Things clients on macOS and iOS; do not use it until this is resolved (see docs/known-issues/repeat-disabled.md). Edit the task without 'repeat' (use repeat:\"none\" to clear an existing rule) and set up recurrence manually in Things.")
+	}
+
 	if req.Repeat != "" && req.When == "inbox" {
 		return invalidInputf("repeat tasks cannot be in inbox; use when:anytime, today, someday, YYYY-MM-DD, or omit when")
 	}
