@@ -578,6 +578,7 @@ func mcpCreateTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		Tags:       req.GetString("tags", ""),
 		Repeat:     req.GetString("repeat", ""),
 		Reminder:   req.GetString("reminder", ""),
+		Timezone:   req.GetString("timezone", ""),
 	})
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -614,6 +615,7 @@ func mcpEditTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		Tags:       req.GetString("tags", ""),
 		Repeat:     req.GetString("repeat", ""),
 		Reminder:   req.GetString("reminder", ""),
+		Timezone:   req.GetString("timezone", ""),
 	}); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -658,7 +660,7 @@ func mcpMoveToToday(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	if err != nil {
 		return mcp.NewToolResultError("uuid is required"), nil
 	}
-	if err := moveTaskToToday(uuid); err != nil {
+	if err := moveTaskToToday(uuid, req.GetString("timezone", "")); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return writeResult(map[string]string{"status": "moved_to_today", "uuid": uuid}), nil
@@ -811,6 +813,7 @@ func mcpCreateProject(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		req.GetString("when", ""),
 		req.GetString("deadline", ""),
 		req.GetString("area", ""),
+		req.GetString("timezone", ""),
 	)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -1049,6 +1052,9 @@ const (
 	mcpServerVersion = "1.3.1"
 )
 
+// tzParamDesc is the shared schema description for the per-call timezone input.
+const tzParamDesc = "IANA timezone (e.g. 'America/New_York') that defines what day 'today' is for this call. Always pass the user's timezone when known; falls back to the server's THINGS_TIMEZONE, then UTC."
+
 const mcpServerInstructions = `Read/write access to a Things 3 account via Things Cloud sync.
 
 Conventions:
@@ -1062,7 +1068,7 @@ Conventions:
 - things_cancel_task logs a task as "won't do"; things_uncomplete_task reopens completed or canceled tasks.
 - things_smoke_test writes to the real account (it creates, edits, completes, and trashes a "[smoke-test]" task); run it only as a diagnostic.
 - Reads sync from Things Cloud on demand, throttled to at most one sync every few seconds; reads immediately after a write are already fresh.
-- 'today' and other calendar days resolve in the server's configured timezone (THINGS_TIMEZONE). If a task scheduled for "today" lands on the wrong day, that variable is misconfigured — prefer an explicit YYYY-MM-DD when in doubt.`
+- Calendar days ('today', deadline validation, repeat anchors) resolve in a timezone. Pass the user's IANA timezone via the 'timezone' parameter on create/edit/move-to-today whenever you know it; otherwise the server falls back to its THINGS_TIMEZONE setting, then UTC. If "today" lands on the wrong day, the timezone is wrong — pass it explicitly or use a YYYY-MM-DD date.`
 
 func newMCPHandler() http.Handler {
 	hooks := &server.Hooks{}
@@ -1337,6 +1343,9 @@ func newMCPHandler() http.Handler {
 		mcp.WithString("reminder",
 			mcp.Description("Reminder time in 24h HH:MM format (e.g. '17:00'). Requires a dated 'when' (today or YYYY-MM-DD); Things fires the notification at this time on the scheduled day."),
 		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
+		),
 	), mcpCreateTask)
 
 	s.AddTool(mcp.NewTool("things_complete_task",
@@ -1386,6 +1395,9 @@ func newMCPHandler() http.Handler {
 		mcp.WithString("reminder",
 			mcp.Description("Reminder time in 24h HH:MM format (e.g. '17:00'), or 'none' to remove it. The task must keep a dated 'when' (today or YYYY-MM-DD); removing the date also removes the reminder."),
 		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
+		),
 	), mcpEditTask)
 
 	s.AddTool(mcp.NewTool("things_cancel_task",
@@ -1419,6 +1431,9 @@ func newMCPHandler() http.Handler {
 		mcp.WithString("uuid",
 			mcp.Required(),
 			mcp.Description("UUID of the task to move"),
+		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
 		),
 	), mcpMoveToToday)
 
@@ -1542,6 +1557,9 @@ func newMCPHandler() http.Handler {
 		),
 		mcp.WithString("area",
 			mcp.Description("Area UUID to assign the project to"),
+		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
 		),
 	), mcpCreateProject)
 

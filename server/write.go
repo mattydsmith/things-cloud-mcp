@@ -412,10 +412,25 @@ func localCalendarDayUTC(t time.Time, loc *time.Location) time.Time {
 	return time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-// todayMidnightUTC returns today's date — today as the user experiences it,
-// per THINGS_TIMEZONE — encoded as UTC midnight.
-func todayMidnightUTC() int64 {
-	return localCalendarDayUTC(timeNow(), thingsLocation()).Unix()
+// resolveLocation resolves a caller-supplied IANA timezone name for one
+// request. Empty means "use the server default" (THINGS_TIMEZONE, then UTC);
+// an unknown name is an input error rather than a silent fallback, because a
+// caller who names a timezone is trusting us to use exactly that one.
+func resolveLocation(name string) (*time.Location, error) {
+	if name == "" {
+		return thingsLocation(), nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, invalidInputf("invalid timezone %q (use an IANA name like America/New_York)", name)
+	}
+	return loc, nil
+}
+
+// todayMidnightIn returns today's date — today as observed in loc — encoded
+// as UTC midnight.
+func todayMidnightIn(loc *time.Location) int64 {
+	return localCalendarDayUTC(timeNow(), loc).Unix()
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +554,7 @@ type CreateTaskRequest struct {
 	Tags       string `json:"tags,omitempty"`        // comma-separated tag UUIDs
 	Repeat     string `json:"repeat,omitempty"`      // daily, weekly, monthly, yearly, every N days/weeks/months/years, optional "until YYYY-MM-DD"
 	Reminder   string `json:"reminder,omitempty"`    // HH:MM (24h); requires a dated when (today or YYYY-MM-DD)
+	Timezone   string `json:"timezone,omitempty"`    // IANA name resolving "today" for this call; defaults to THINGS_TIMEZONE
 }
 
 // EditTaskRequest is the JSON body for POST /api/tasks/edit.
@@ -555,6 +571,7 @@ type EditTaskRequest struct {
 	Tags       string `json:"tags,omitempty"`
 	Repeat     string `json:"repeat,omitempty"`   // daily, weekly, monthly, yearly, every N days/weeks/months/years, optional "until YYYY-MM-DD", none
 	Reminder   string `json:"reminder,omitempty"` // HH:MM (24h) or "none" to clear; requires the task to keep a dated when
+	Timezone   string `json:"timezone,omitempty"` // IANA name resolving "today" for this call; defaults to THINGS_TIMEZONE
 }
 
 // UUIDRequest is the JSON body for complete/trash endpoints.
@@ -745,12 +762,12 @@ func parseReminder(s string) (int, error) {
 
 // editKeepsDate reports whether the task will still carry a scheduled day
 // after the edit — the anchor a reminder needs.
-func editKeepsDate(req EditTaskRequest, task *thingscloud.Task) bool {
+func editKeepsDate(req EditTaskRequest, task *thingscloud.Task, loc *time.Location) bool {
 	if req.When == "none" {
 		return false
 	}
 	if req.When != "" {
-		_, sr, tir, ok := parseWhen(req.When)
+		_, sr, tir, ok := parseWhen(req.When, loc)
 		return ok && (sr != nil || tir != nil)
 	}
 	return task.ScheduledDate != nil || task.TodayIndexReference != nil
@@ -759,10 +776,11 @@ func editKeepsDate(req EditTaskRequest, task *thingscloud.Task) bool {
 // parseWhen interprets the when parameter. Returns (st, sr, tir, handled).
 // For named values (today/anytime/someday/inbox/none) and YYYY-MM-DD dates.
 // A future date goes to Upcoming (st=2), today's date goes to Today (st=1).
-func parseWhen(when string) (st int, sr, tir *int64, handled bool) {
+// Relative days resolve against the calendar day currently observed in loc.
+func parseWhen(when string, loc *time.Location) (st int, sr, tir *int64, handled bool) {
 	switch when {
 	case "today":
-		today := todayMidnightUTC()
+		today := todayMidnightIn(loc)
 		return 1, &today, &today, true
 	case "anytime":
 		return 1, nil, nil, true
@@ -776,7 +794,7 @@ func parseWhen(when string) (st int, sr, tir *int64, handled bool) {
 		// Try parsing as YYYY-MM-DD
 		if t, err := time.Parse("2006-01-02", when); err == nil {
 			ts := t.UTC().Unix()
-			today := todayMidnightUTC()
+			today := todayMidnightIn(loc)
 			if ts < today {
 				// Past date → treat as Today
 				return 1, &today, &today, true
@@ -829,6 +847,11 @@ func createTask(req CreateTaskRequest) (string, error) {
 		return "", err
 	}
 
+	loc, err := resolveLocation(req.Timezone)
+	if err != nil {
+		return "", err
+	}
+
 	taskUUID := generateUUID()
 	now := nowTs()
 
@@ -837,7 +860,7 @@ func createTask(req CreateTaskRequest) (string, error) {
 	var dd *int64
 
 	if req.When != "" {
-		s, r, t, ok := parseWhen(req.When)
+		s, r, t, ok := parseWhen(req.When, loc)
 		if !ok {
 			return "", invalidInputf("invalid when value: %s (use today, anytime, someday, inbox, or YYYY-MM-DD)", req.When)
 		}
@@ -862,7 +885,7 @@ func createTask(req CreateTaskRequest) (string, error) {
 			return "", invalidInputf("deadline must be YYYY-MM-DD format, got: %s", req.Deadline)
 		}
 		ts := t.Unix()
-		if ts < todayMidnightUTC() {
+		if ts < todayMidnightIn(loc) {
 			return "", invalidInputf("deadline cannot be in the past")
 		}
 		dd = &ts
@@ -907,9 +930,9 @@ func createTask(req CreateTaskRequest) (string, error) {
 	// Build repeat rule if specified
 	var rr *json.RawMessage
 	if req.Repeat != "" {
-		// Resolve the reference day in the user's timezone; sr is already a
-		// UTC-midnight-encoded date, so read its components in UTC.
-		refDate := timeNow().In(thingsLocation())
+		// Resolve the reference day in the request's timezone; sr is already
+		// a UTC-midnight-encoded date, so read its components in UTC.
+		refDate := timeNow().In(loc)
 		if sr != nil {
 			refDate = time.Unix(*sr, 0).UTC()
 		}
@@ -1037,7 +1060,11 @@ func editTask(req EditTaskRequest) error {
 		return err
 	}
 
-	fields, err := buildEditUpdate(req, task)
+	loc, err := resolveLocation(req.Timezone)
+	if err != nil {
+		return err
+	}
+	fields, err := buildEditUpdate(req, task, loc)
 	if err != nil {
 		return err
 	}
@@ -1050,8 +1077,9 @@ func editTask(req EditTaskRequest) error {
 }
 
 // buildEditUpdate constructs the update payload for an edit. task is the
-// task's current synced state; inputs must already be format-validated.
-func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]any, error) {
+// task's current synced state; inputs must already be format-validated, and
+// loc is the resolved calendar-day timezone for this request.
+func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task, loc *time.Location) (map[string]any, error) {
 	u := newTaskUpdate()
 	if req.Repeat != "" && req.When == "inbox" {
 		return nil, invalidInputf("repeat tasks cannot be in inbox; use when:anytime, today, someday, YYYY-MM-DD, or omit when")
@@ -1071,7 +1099,7 @@ func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]an
 		// A reminder can't outlive its scheduled day.
 		u.clearReminder()
 	} else if req.When != "" {
-		st, sr, tir, ok := parseWhen(req.When)
+		st, sr, tir, ok := parseWhen(req.When, loc)
 		if !ok {
 			return nil, invalidInputf("invalid when value: %s (use today, anytime, someday, inbox, none, or YYYY-MM-DD)", req.When)
 		}
@@ -1088,7 +1116,7 @@ func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]an
 		if err != nil {
 			return nil, err
 		}
-		if !editKeepsDate(req, task) {
+		if !editKeepsDate(req, task, loc) {
 			return nil, invalidInputf("reminder requires a scheduled date; set when to today or YYYY-MM-DD")
 		}
 		u.reminder(sec)
@@ -1100,7 +1128,7 @@ func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]an
 		if err != nil {
 			return nil, invalidInputf("deadline must be YYYY-MM-DD format, got: %s", req.Deadline)
 		}
-		if t.Unix() < todayMidnightUTC() {
+		if t.Unix() < todayMidnightIn(loc) {
 			return nil, invalidInputf("deadline cannot be in the past")
 		}
 		u.deadline(t.Unix())
@@ -1151,7 +1179,7 @@ func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]an
 			u.schedule(1, nil, nil)
 		}
 
-		rr, err := buildRepeatRule(req.Repeat, timeNow().In(thingsLocation()))
+		rr, err := buildRepeatRule(req.Repeat, timeNow().In(loc))
 		if err != nil {
 			return nil, fmt.Errorf("invalid repeat: %w", err)
 		}
@@ -1160,14 +1188,18 @@ func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]an
 	return u.build(), nil
 }
 
-func moveTaskToToday(uuid string) error {
+func moveTaskToToday(uuid, tzName string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
+		return err
+	}
+	loc, err := resolveLocation(tzName)
+	if err != nil {
 		return err
 	}
 	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
 		return err
 	}
-	today := todayMidnightUTC()
+	today := todayMidnightIn(loc)
 	u := newTaskUpdate().schedule(1, today, today)
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
 	if err := writeToHistory(env); err != nil {
@@ -1419,8 +1451,12 @@ func createHeading(title, projectUUID string) (string, error) {
 	return headingUUID, nil
 }
 
-func createProject(title, note, when, deadline, areaUUID string) (string, error) {
+func createProject(title, note, when, deadline, areaUUID, tzName string) (string, error) {
 	if err := validateOptionalUUID("area", areaUUID); err != nil {
+		return "", err
+	}
+	loc, err := resolveLocation(tzName)
+	if err != nil {
 		return "", err
 	}
 	areaUUID = normalizeOptionalUUID(areaUUID)
@@ -1439,7 +1475,7 @@ func createProject(title, note, when, deadline, areaUUID string) (string, error)
 	switch when {
 	case "today":
 		st = 1
-		today := todayMidnightUTC()
+		today := todayMidnightIn(loc)
 		sr = &today
 		tir = &today
 	case "someday":
@@ -1456,7 +1492,7 @@ func createProject(title, note, when, deadline, areaUUID string) (string, error)
 			return "", invalidInputf("deadline must be YYYY-MM-DD format, got: %s", deadline)
 		}
 		ts := t.Unix()
-		if ts < todayMidnightUTC() {
+		if ts < todayMidnightIn(loc) {
 			return "", invalidInputf("deadline cannot be in the past")
 		}
 		dd = &ts

@@ -149,7 +149,7 @@ Once connected, Claude can do pretty much everything you'd do in the Things app:
 - **Soft-deleted rows are purged from the local cache after sync.** This keeps the SQLite mirror from growing forever while preserving normal sync semantics.
 - **Writes verify their targets exist.** Completing, editing, trashing, or moving a UUID that isn't in synced state is rejected instead of appending an orphan event to the Things Cloud history. Referenced projects, parent tasks, areas, and tags are checked too, including entity type (e.g. a `project` argument must actually be a project).
 - **Editing a task's project no longer wipes its schedule.** A scheduled task keeps its date when moved between projects; only tasks leaving the inbox are rescheduled to Anytime (inbox tasks can't live in projects).
-- **Calendar days resolve in the user's timezone.** `when: "today"`, past-deadline validation, and repeat anchors use `THINGS_TIMEZONE` (IANA name) instead of the server's UTC clock, so an evening "today" no longer lands on tomorrow.
+- **Calendar days resolve in the user's timezone.** `when: "today"`, past-deadline validation, and repeat anchors use the request's `timezone` parameter when the client sends one, falling back to `THINGS_TIMEZONE` (IANA name), then UTC — so an evening "today" no longer lands on tomorrow. An explicitly passed invalid timezone is rejected rather than silently defaulted.
 - **On-demand syncs are throttled.** Bursts of reads trigger at most one Things Cloud sync per `SYNC_MIN_INTERVAL` seconds (default 2), avoiding 429 rate limiting; post-write refreshes bypass the throttle so writes read back immediately.
 - **`/mcp` request bodies are capped at 1 MB**, matching the REST endpoints.
 

@@ -191,7 +191,7 @@ func TestMovesClearReminder(t *testing.T) {
 		}
 	}
 
-	if err := moveTaskToToday(testTaskUUID); err != nil {
+	if err := moveTaskToToday(testTaskUUID, ""); err != nil {
 		t.Fatalf("move to today: %v", err)
 	}
 	fields := lastEnvelope(t, envs).payload.(map[string]any)

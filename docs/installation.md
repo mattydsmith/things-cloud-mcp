@@ -63,7 +63,7 @@ fly secrets set API_KEY='your-chosen-api-key'
 
 Any long random string works, e.g. `openssl rand -hex 32`.
 
-Set your timezone so `when: "today"` means your today, not UTC's:
+Set your fallback timezone so `when: "today"` means your today even when the client doesn't send one (MCP agents can pass a per-call `timezone`, which takes precedence):
 
 ```bash
 fly secrets set THINGS_TIMEZONE='America/New_York'
@@ -182,7 +182,7 @@ Fly.io doesn't bill you if your monthly usage is under $5. The server scales to 
 | `THINGS_USERNAME` | Yes | Your Things account email |
 | `THINGS_PASSWORD` | Yes | Your Things account password |
 | `API_KEY` | No | Auth token for the MCP endpoint (`/mcp`) and REST API (`/api/*`). Sent as `Authorization: Bearer <key>`, or as `?key=<key>` on `/mcp` for clients that can't set headers. If unset, no auth required (not recommended). |
-| `THINGS_TIMEZONE` | No | IANA timezone (e.g. `America/New_York`) for resolving calendar days: `when: "today"`, past-deadline checks, repeat anchors. Defaults to UTC, which schedules "today" onto tomorrow during the evening for anyone west of UTC — set it to your real timezone. |
+| `THINGS_TIMEZONE` | No | Fallback IANA timezone (e.g. `America/New_York`) for resolving calendar days — `when: "today"`, past-deadline checks, repeat anchors. MCP clients can pass a per-call `timezone` parameter, which wins; this variable covers calls that omit it. Defaults to UTC, which schedules an evening "today" onto tomorrow for anyone west of UTC — set it. |
 | `SYNC_MIN_INTERVAL` | No | Minimum seconds between on-demand syncs against Things Cloud (default: `2`). Bursts of reads reuse the local mirror instead of re-syncing; reads right after a write are always fresh. |
 | `PORT` | No | Server port (default: `8080`) |
 | `DEBUG` | No | Set to `true` for verbose HTTP logging |

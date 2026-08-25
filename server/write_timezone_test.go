@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,7 +56,7 @@ func TestParseWhenTodayResolvesLocalDay(t *testing.T) {
 		t.Setenv("THINGS_TIMEZONE", "America/New_York")
 		withFrozenClock(t, time.Date(2026, 8, 25, 1, 8, 0, 0, time.UTC))
 
-		st, sr, tir, ok := parseWhen("today")
+		st, sr, tir, ok := parseWhen("today", thingsLocation())
 		if !ok || st != 1 {
 			t.Fatalf("parseWhen(today) = st=%d ok=%v", st, ok)
 		}
@@ -72,7 +73,7 @@ func TestParseWhenTodayResolvesLocalDay(t *testing.T) {
 		t.Setenv("THINGS_TIMEZONE", "Asia/Shanghai")
 		withFrozenClock(t, time.Date(2026, 8, 24, 22, 0, 0, 0, time.UTC))
 
-		_, sr, tir, ok := parseWhen("today")
+		_, sr, tir, ok := parseWhen("today", thingsLocation())
 		if !ok || sr == nil {
 			t.Fatal("parseWhen(today) failed")
 		}
@@ -86,7 +87,7 @@ func TestParseWhenTodayResolvesLocalDay(t *testing.T) {
 		t.Setenv("THINGS_TIMEZONE", "")
 		withFrozenClock(t, time.Date(2026, 8, 25, 1, 8, 0, 0, time.UTC))
 
-		_, sr, _, ok := parseWhen("today")
+		_, sr, _, ok := parseWhen("today", thingsLocation())
 		if !ok || sr == nil || *sr != dayUTC(2026, 8, 25).Unix() {
 			t.Fatalf("expected UTC day 2026-08-25, got %v", sr)
 		}
@@ -96,7 +97,7 @@ func TestParseWhenTodayResolvesLocalDay(t *testing.T) {
 		t.Setenv("THINGS_TIMEZONE", "America/New_York")
 		withFrozenClock(t, time.Date(2026, 8, 25, 1, 8, 0, 0, time.UTC))
 
-		st, sr, tir, ok := parseWhen("2026-08-24")
+		st, sr, tir, ok := parseWhen("2026-08-24", thingsLocation())
 		if !ok || st != 1 {
 			t.Fatalf("parseWhen(2026-08-24) = st=%d ok=%v, want Today", st, ok)
 		}
@@ -127,5 +128,71 @@ func TestDeadlineTodayLocalNotRejectedAsPast(t *testing.T) {
 	payload := lastEnvelope(t, envs).payload.(taskCreatePayload)
 	if payload.Dd == nil || *payload.Dd != dayUTC(2026, 8, 24).Unix() {
 		t.Fatalf("unexpected deadline payload: %v", payload.Dd)
+	}
+}
+
+func TestPerCallTimezoneOverridesServerDefault(t *testing.T) {
+	withFakeStore(t, populatedStore())
+	envs := withCapturedWrites(t)
+	// Server default deliberately wrong for the caller.
+	t.Setenv("THINGS_TIMEZONE", "UTC")
+	withFrozenClock(t, time.Date(2026, 8, 25, 1, 8, 0, 0, time.UTC))
+
+	t.Run("create task when:today", func(t *testing.T) {
+		_, err := createTask(CreateTaskRequest{Title: "x", When: "today", Timezone: "America/New_York"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		payload := lastEnvelope(t, envs).payload.(taskCreatePayload)
+		want := dayUTC(2026, 8, 24).Unix()
+		if payload.Sr == nil || *payload.Sr != want {
+			t.Fatalf("sr = %v, want %d (agent timezone must win over server default)", payload.Sr, want)
+		}
+	})
+
+	t.Run("move to today", func(t *testing.T) {
+		if err := moveTaskToToday(testTaskUUID, "America/New_York"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		fields := lastEnvelope(t, envs).payload.(map[string]any)
+		if sr, _ := fields["sr"].(int64); sr != dayUTC(2026, 8, 24).Unix() {
+			t.Fatalf("sr = %v, want 2026-08-24", fields["sr"])
+		}
+	})
+
+	t.Run("edit task when:today", func(t *testing.T) {
+		if err := editTask(EditTaskRequest{UUID: testTaskUUID, When: "today", Timezone: "America/New_York"}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		fields := lastEnvelope(t, envs).payload.(map[string]any)
+		sr, ok := fields["sr"].(*int64)
+		if !ok || sr == nil || *sr != dayUTC(2026, 8, 24).Unix() {
+			t.Fatalf("sr = %v, want 2026-08-24", fields["sr"])
+		}
+	})
+
+	t.Run("create project when:today", func(t *testing.T) {
+		_, err := createProject("p", "", "today", "", "", "America/New_York")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		payload := lastEnvelope(t, envs).payload.(taskCreatePayload)
+		want := dayUTC(2026, 8, 24).Unix()
+		if payload.Sr == nil || *payload.Sr != want {
+			t.Fatalf("sr = %v, want %d", payload.Sr, want)
+		}
+	})
+}
+
+func TestExplicitInvalidTimezoneIsRejected(t *testing.T) {
+	withFakeStore(t, populatedStore())
+	withCapturedWrites(t)
+
+	_, err := createTask(CreateTaskRequest{Title: "x", When: "today", Timezone: "Mars/Olympus_Mons"})
+	if err == nil || !isInvalidInput(err) || !strings.Contains(err.Error(), "invalid timezone") {
+		t.Fatalf("explicitly named bad timezone must be rejected, not silently defaulted; got: %v", err)
+	}
+	if err := moveTaskToToday(testTaskUUID, "Mars/Olympus_Mons"); err == nil || !isInvalidInput(err) {
+		t.Fatalf("move with bad timezone must be rejected, got: %v", err)
 	}
 }
