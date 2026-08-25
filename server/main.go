@@ -592,6 +592,7 @@ func main() {
 	defer stop()
 	server := &http.Server{Addr: ":" + port}
 
+	log.Printf("Calendar days ('today', deadlines) resolve in timezone %s — set THINGS_TIMEZONE to change", thingsLocation())
 	log.Printf("Starting server on :%s", port)
 	if err := serveWithGracefulShutdown(shutdownCtx, server, shutdownTimeout); err != nil {
 		log.Fatal(err)

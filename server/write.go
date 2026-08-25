@@ -13,6 +13,7 @@ import (
 	"strings"
 	gosync "sync"
 	"time"
+	_ "time/tzdata" // THINGS_TIMEZONE must resolve inside the scratch container
 
 	thingscloud "github.com/arthursoares/things-cloud-sdk"
 	"github.com/google/uuid"
@@ -377,9 +378,44 @@ func nowTs() float64 {
 	return float64(time.Now().UnixNano()) / 1e9
 }
 
+// timeNow is the clock used for calendar-day resolution. Overridable in
+// tests to freeze the boundary cases.
+var timeNow = time.Now
+
+// tzWarnOnce keeps an invalid THINGS_TIMEZONE from spamming the log on
+// every write.
+var tzWarnOnce gosync.Once
+
+// thingsLocation returns the timezone used to resolve calendar days like
+// "today". Set THINGS_TIMEZONE to an IANA name (e.g. "America/New_York") —
+// the server usually runs in UTC, which is not the user's day for hours at
+// a stretch. Unset or invalid values fall back to UTC.
+func thingsLocation() *time.Location {
+	name := os.Getenv("THINGS_TIMEZONE")
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		tzWarnOnce.Do(func() {
+			log.Printf("[CONFIG] invalid THINGS_TIMEZONE %q (%v); falling back to UTC", name, err)
+		})
+		return time.UTC
+	}
+	return loc
+}
+
+// localCalendarDayUTC returns the calendar day of t as observed in loc,
+// encoded as UTC midnight — the encoding Things uses for all dates.
+func localCalendarDayUTC(t time.Time, loc *time.Location) time.Time {
+	lt := t.In(loc)
+	return time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// todayMidnightUTC returns today's date — today as the user experiences it,
+// per THINGS_TIMEZONE — encoded as UTC midnight.
 func todayMidnightUTC() int64 {
-	now := time.Now().UTC()
-	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix()
+	return localCalendarDayUTC(timeNow(), thingsLocation()).Unix()
 }
 
 // ---------------------------------------------------------------------------
@@ -871,9 +907,11 @@ func createTask(req CreateTaskRequest) (string, error) {
 	// Build repeat rule if specified
 	var rr *json.RawMessage
 	if req.Repeat != "" {
-		refDate := time.Now()
+		// Resolve the reference day in the user's timezone; sr is already a
+		// UTC-midnight-encoded date, so read its components in UTC.
+		refDate := timeNow().In(thingsLocation())
 		if sr != nil {
-			refDate = time.Unix(*sr, 0)
+			refDate = time.Unix(*sr, 0).UTC()
 		}
 		rr, err = buildRepeatRule(req.Repeat, refDate)
 		if err != nil {
@@ -1113,7 +1151,7 @@ func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task) (map[string]an
 			u.schedule(1, nil, nil)
 		}
 
-		rr, err := buildRepeatRule(req.Repeat, time.Now())
+		rr, err := buildRepeatRule(req.Repeat, timeNow().In(thingsLocation()))
 		if err != nil {
 			return nil, fmt.Errorf("invalid repeat: %w", err)
 		}

@@ -99,6 +99,7 @@ The example app and real usage require:
 - `THINGS_USERNAME` — Things account email
 - `THINGS_PASSWORD` — Things account password
 - `API_KEY` — Auth token for `/api/*` (bearer header) and `/mcp` (bearer header or `?key=` query param); optional, no auth if unset
+- `THINGS_TIMEZONE` — IANA timezone (e.g. `America/New_York`) used to resolve calendar days like `when: "today"` and deadline validation (default: UTC — wrong for most users; set it)
 - `SYNC_MIN_INTERVAL` — Minimum seconds between on-demand syncs against Things Cloud (default: `2`); post-write refreshes bypass the throttle
 - `PORT` — Server port (default: `8080`)
 - `DEBUG` — Enable verbose HTTP request/response logging when `true`

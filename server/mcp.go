@@ -1061,7 +1061,8 @@ Conventions:
 - Trashing a task is reversible (things_untrash_task). Purging a task and deleting a checklist item are PERMANENT — prefer trash unless the user explicitly wants permanent deletion.
 - things_cancel_task logs a task as "won't do"; things_uncomplete_task reopens completed or canceled tasks.
 - things_smoke_test writes to the real account (it creates, edits, completes, and trashes a "[smoke-test]" task); run it only as a diagnostic.
-- Reads sync from Things Cloud on demand, throttled to at most one sync every few seconds; reads immediately after a write are already fresh.`
+- Reads sync from Things Cloud on demand, throttled to at most one sync every few seconds; reads immediately after a write are already fresh.
+- 'today' and other calendar days resolve in the server's configured timezone (THINGS_TIMEZONE). If a task scheduled for "today" lands on the wrong day, that variable is misconfigured — prefer an explicit YYYY-MM-DD when in doubt.`
 
 func newMCPHandler() http.Handler {
 	hooks := &server.Hooks{}
