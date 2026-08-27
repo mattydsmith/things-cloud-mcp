@@ -10,6 +10,12 @@ if [ -z "${BASE}" ]; then
   exit 1
 fi
 ENDPOINT="${BASE}/mcp"
+
+# Optional bearer auth — set API_KEY if the server was deployed with one.
+CURL_AUTH=()
+if [ -n "${API_KEY:-}" ]; then
+  CURL_AUTH=(-H "Authorization: Bearer ${API_KEY}")
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_FILE="${SCRIPT_DIR}/test-results.log"
 
@@ -25,6 +31,7 @@ mcp_call() {
   curl -s --max-time 60 "${ENDPOINT}" \
     -X POST \
     -H "Content-Type: application/json" \
+    ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} \
     --data-raw "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${tool}\",\"arguments\":${args}}}"
 }
 

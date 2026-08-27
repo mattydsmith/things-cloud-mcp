@@ -2,6 +2,7 @@ package sync
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	things "github.com/arthursoares/things-cloud-sdk"
@@ -101,6 +102,15 @@ func (s *Syncer) getTask(uuid string) (*things.Task, error) {
 		t.AlarmTimeOffset = &offset
 	}
 
+	// Decode stored recurrence rule
+	if recurrenceRule.Valid && recurrenceRule.String != "" {
+		var rc things.RepeaterConfiguration
+		if err := json.Unmarshal([]byte(recurrenceRule.String), &rc); err != nil {
+			return nil, err
+		}
+		t.Repeater = &rc
+	}
+
 	// Load tags from junction table
 	rows, err := s.db.Query(`SELECT tag_uuid FROM task_tags WHERE task_uuid = ?`, uuid)
 	if err != nil {
@@ -162,6 +172,16 @@ func (s *Syncer) saveTask(t *things.Task) error {
 		alarmTimeOffset = sql.NullInt64{Int64: int64(*t.AlarmTimeOffset), Valid: true}
 	}
 
+	// Encode recurrence rule as JSON
+	var recurrenceRule sql.NullString
+	if t.Repeater != nil {
+		encoded, err := json.Marshal(t.Repeater)
+		if err != nil {
+			return err
+		}
+		recurrenceRule = sql.NullString{String: string(encoded), Valid: true}
+	}
+
 	// Convert today index reference (tir)
 	var todayIndexRef sql.NullInt64
 	if t.TodayIndexReference != nil {
@@ -186,7 +206,7 @@ func (s *Syncer) saveTask(t *things.Task) error {
 		t.UUID, int(t.Type), t.Title, t.Note, int(t.Status), int(t.Schedule),
 		scheduledDate, deadlineDate, completionDate, creationDate, modificationDate,
 		t.Index, t.TodayIndex, inTrash, areaUUID, projectUUID, headingUUID,
-		alarmTimeOffset, sql.NullString{}, todayIndexRef, // recurrence_rule not directly on Task struct
+		alarmTimeOffset, recurrenceRule, todayIndexRef,
 	)
 	if err != nil {
 		return err
@@ -232,6 +252,10 @@ func (s *Syncer) getArea(uuid string) (*things.Area, error) {
 		return nil, err
 	}
 
+	if a.TagIDs, err = s.loadAreaTagIDs(a.UUID); err != nil {
+		return nil, err
+	}
+
 	return &a, nil
 }
 
@@ -241,7 +265,39 @@ func (s *Syncer) saveArea(a *things.Area) error {
 		INSERT OR REPLACE INTO areas (uuid, title, deleted)
 		VALUES (?, ?, 0)
 	`, a.UUID, a.Title)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Delete and re-insert area_tags entries
+	if _, err := s.db.Exec(`DELETE FROM area_tags WHERE area_uuid = ?`, a.UUID); err != nil {
+		return err
+	}
+	for _, tagID := range a.TagIDs {
+		if _, err := s.db.Exec(`INSERT INTO area_tags (area_uuid, tag_uuid) VALUES (?, ?)`, a.UUID, tagID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadAreaTagIDs returns the tag UUIDs attached to an area.
+func (s *Syncer) loadAreaTagIDs(uuid string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT tag_uuid FROM area_tags WHERE area_uuid = ?`, uuid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tagIDs []string
+	for rows.Next() {
+		var tagUUID string
+		if err := rows.Scan(&tagUUID); err != nil {
+			return nil, err
+		}
+		tagIDs = append(tagIDs, tagUUID)
+	}
+	return tagIDs, rows.Err()
 }
 
 // markAreaDeleted soft-deletes an area by setting its deleted flag to 1.

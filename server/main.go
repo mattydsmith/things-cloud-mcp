@@ -301,6 +301,35 @@ func authHandlerMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// mcpAuthMiddleware protects the MCP endpoint with API_KEY when it is set.
+// The key is accepted either as "Authorization: Bearer <key>" (Claude Code,
+// Claude Desktop, mcp-remote) or as a "key" query parameter in the endpoint
+// URL, because claude.ai custom connectors cannot send custom headers.
+func mcpAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiKey := os.Getenv("API_KEY")
+		if apiKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") == "Bearer "+apiKey || r.URL.Query().Get("key") == apiKey {
+			next.ServeHTTP(w, r)
+			return
+		}
+		jsonError(w, "unauthorized", 401)
+	})
+}
+
+// limitRequestBody caps request bodies read by next. The REST handlers cap
+// their own reads via decodeJSONBody; the MCP handler reads unbounded input
+// without this.
+func limitRequestBody(limit int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func debugAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if os.Getenv("DEBUG") != "true" {
@@ -431,9 +460,19 @@ func main() {
 	http.HandleFunc("/api/tasks/trash", authMiddleware(handleTrashTask))
 	http.HandleFunc("/api/tasks/edit", authMiddleware(handleEditTask))
 
-	// Debug endpoint — dump raw write history items
+	// Debug endpoint — dump raw write history items. Things Cloud truncates
+	// long histories to a size window; pass ?start-index=N to read the tail.
 	http.HandleFunc("/api/debug/history", debugAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		items, err := history.RawItems()
+		startIndex := 0
+		if raw := r.URL.Query().Get("start-index"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 0 {
+				jsonError(w, "start-index must be a non-negative integer", 400)
+				return
+			}
+			startIndex = n
+		}
+		items, err := history.RawItemsFrom(startIndex)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
@@ -556,13 +595,14 @@ func main() {
 		})
 	}))
 
-	// MCP endpoint (no bearer auth — claude.ai connectors use OAuth which we don't implement)
-	http.Handle("/mcp", newMCPHandler())
+	// MCP endpoint — protected by API_KEY when set (bearer header or ?key= query param)
+	http.Handle("/mcp", mcpAuthMiddleware(limitRequestBody(maxJSONBodyBytes, newMCPHandler())))
 
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	server := &http.Server{Addr: ":" + port}
 
+	log.Printf("Calendar days ('today', deadlines) resolve in timezone %s — set THINGS_TIMEZONE to change", thingsLocation())
 	log.Printf("Starting server on :%s", port)
 	if err := serveWithGracefulShutdown(shutdownCtx, server, shutdownTimeout); err != nil {
 		log.Fatal(err)

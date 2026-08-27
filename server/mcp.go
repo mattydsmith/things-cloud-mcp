@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +16,14 @@ import (
 	things "github.com/arthursoares/things-cloud-sdk"
 	"github.com/arthursoares/things-cloud-sdk/sync"
 )
+
+// Things app icon, downscaled from things-logo-rich.png at the repo root.
+// Served as a data URI in the MCP initialize response.
+//
+//go:embed things_icon.png
+var thingsIconPNG []byte
+
+var thingsIconDataURI = "data:image/png;base64," + base64.StdEncoding.EncodeToString(thingsIconPNG)
 
 // ---------------------------------------------------------------------------
 // Output types for JSON serialization
@@ -28,21 +38,27 @@ type taskOutput struct {
 	CompletedAt   string   `json:"completed_at,omitempty"`
 	Deadline      string   `json:"deadline,omitempty"`
 	ScheduledFor  string   `json:"scheduled_for,omitempty"`
+	Reminder      string   `json:"reminder,omitempty"`
+	Repeat        string   `json:"repeat,omitempty"`
 	TodayIndexRef string   `json:"today_index_ref,omitempty"`
 	ProjectID     string   `json:"project_id,omitempty"`
+	HeadingID     string   `json:"heading_id,omitempty"`
 	AreaID        string   `json:"area_id,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
+	Trashed       bool     `json:"trashed,omitempty"`
 }
 
 type areaOutput struct {
-	UUID  string `json:"uuid"`
-	Title string `json:"title"`
+	UUID  string   `json:"uuid"`
+	Title string   `json:"title"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 type tagOutput struct {
 	UUID      string `json:"uuid"`
 	Title     string `json:"title"`
 	Shorthand string `json:"shorthand,omitempty"`
+	ParentID  string `json:"parent_id,omitempty"`
 }
 
 type checklistOutput struct {
@@ -87,16 +103,66 @@ func formatTask(t *things.Task) taskOutput {
 	if t.ScheduledDate != nil {
 		o.ScheduledFor = t.ScheduledDate.Format("2006-01-02")
 	}
+	if t.AlarmTimeOffset != nil {
+		o.Reminder = fmt.Sprintf("%02d:%02d", *t.AlarmTimeOffset/3600, (*t.AlarmTimeOffset%3600)/60)
+	}
+	o.Repeat = describeRepeat(t.Repeater)
 	if t.TodayIndexReference != nil {
 		o.TodayIndexRef = t.TodayIndexReference.Format("2006-01-02")
 	}
 	if len(t.ParentTaskIDs) > 0 {
 		o.ProjectID = t.ParentTaskIDs[0]
 	}
+	if len(t.ActionGroupIDs) > 0 {
+		o.HeadingID = t.ActionGroupIDs[0]
+	}
 	if len(t.AreaIDs) > 0 {
 		o.AreaID = t.AreaIDs[0]
 	}
+	o.Trashed = t.InTrash
 	return o
+}
+
+func formatArea(a *things.Area) areaOutput {
+	return areaOutput{UUID: a.UUID, Title: a.Title, Tags: a.TagIDs}
+}
+
+func formatTag(t *things.Tag) tagOutput {
+	o := tagOutput{UUID: t.UUID, Title: t.Title, Shorthand: t.ShortHand}
+	if len(t.ParentTagIDs) > 0 {
+		o.ParentID = t.ParentTagIDs[0]
+	}
+	return o
+}
+
+// describeRepeat renders a repeat rule as a short human-readable phrase,
+// e.g. "every 2 weeks until 2027-03-01" or "every month after completion".
+func describeRepeat(rc *things.RepeaterConfiguration) string {
+	if rc == nil {
+		return ""
+	}
+	unit := "period"
+	switch rc.FrequencyUnit {
+	case things.FrequencyUnitDaily:
+		unit = "day"
+	case things.FrequencyUnitWeekly:
+		unit = "week"
+	case things.FrequencyUnitMonthly:
+		unit = "month"
+	case things.FrequencyUnitYearly:
+		unit = "year"
+	}
+	desc := "every " + unit
+	if rc.FrequencyAmplitude > 1 {
+		desc = fmt.Sprintf("every %d %ss", rc.FrequencyAmplitude, unit)
+	}
+	if rc.Type == 1 {
+		desc += " after completion"
+	}
+	if rc.LastScheduledAt != nil && !rc.IsNeverending() {
+		desc += " until " + rc.LastScheduledAt.Time().Format("2006-01-02")
+	}
+	return desc
 }
 
 func jsonToolResult(v any) *mcp.CallToolResult {
@@ -130,7 +196,7 @@ func tasksResult(tasks []*things.Task) *mcp.CallToolResult {
 func areasResult(areas []*things.Area) *mcp.CallToolResult {
 	out := make([]areaOutput, len(areas))
 	for i, a := range areas {
-		out[i] = areaOutput{UUID: a.UUID, Title: a.Title}
+		out[i] = formatArea(a)
 	}
 	return jsonToolResultWithIndent(out, true)
 }
@@ -138,7 +204,7 @@ func areasResult(areas []*things.Area) *mcp.CallToolResult {
 func tagsResult(tags []*things.Tag) *mcp.CallToolResult {
 	out := make([]tagOutput, len(tags))
 	for i, t := range tags {
-		out[i] = tagOutput{UUID: t.UUID, Title: t.Title, Shorthand: t.ShortHand}
+		out[i] = formatTag(t)
 	}
 	return jsonToolResultWithIndent(out, true)
 }
@@ -373,6 +439,32 @@ func mcpListAreaTasks(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	return tasksResult(tasks), nil
 }
 
+func mcpListTagTasks(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	tagUUID, err := req.RequireString("tag_uuid")
+	if err != nil {
+		return mcp.NewToolResultError("tag_uuid is required"), nil
+	}
+	opts, err := mcpPaginationOpts(req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if syncErr := syncForMCPReadResult(); syncErr != nil {
+		return syncErr, nil
+	}
+	tag, err := syncer.State().Tag(tagUUID)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if tag == nil {
+		return mcp.NewToolResultError("tag not found"), nil
+	}
+	tasks, err := syncer.State().TasksWithTag(tagUUID, opts)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return tasksResult(tasks), nil
+}
+
 func mcpListCompleted(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if syncErr := syncForMCPReadResult(); syncErr != nil {
 		return syncErr, nil
@@ -445,7 +537,7 @@ func mcpGetArea(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 	if area == nil {
 		return mcp.NewToolResultError("area not found"), nil
 	}
-	return jsonToolResultWithIndent(areaOutput{UUID: area.UUID, Title: area.Title}, true), nil
+	return jsonToolResultWithIndent(formatArea(area), true), nil
 }
 
 func mcpGetTag(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -463,7 +555,7 @@ func mcpGetTag(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult,
 	if tag == nil {
 		return mcp.NewToolResultError("tag not found"), nil
 	}
-	return jsonToolResultWithIndent(tagOutput{UUID: tag.UUID, Title: tag.Title, Shorthand: tag.ShortHand}, true), nil
+	return jsonToolResultWithIndent(formatTag(tag), true), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -482,8 +574,11 @@ func mcpCreateTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		Deadline:   req.GetString("deadline", ""),
 		Project:    req.GetString("project", ""),
 		ParentTask: req.GetString("parent_task", ""),
+		Heading:    req.GetString("heading", ""),
 		Tags:       req.GetString("tags", ""),
 		Repeat:     req.GetString("repeat", ""),
+		Reminder:   req.GetString("reminder", ""),
+		Timezone:   req.GetString("timezone", ""),
 	})
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -515,13 +610,27 @@ func mcpEditTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		Deadline:   req.GetString("deadline", ""),
 		Project:    req.GetString("project", ""),
 		ParentTask: req.GetString("parent_task", ""),
+		Heading:    req.GetString("heading", ""),
 		Area:       req.GetString("area", ""),
 		Tags:       req.GetString("tags", ""),
 		Repeat:     req.GetString("repeat", ""),
+		Reminder:   req.GetString("reminder", ""),
+		Timezone:   req.GetString("timezone", ""),
 	}); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return writeResult(map[string]string{"status": "updated", "uuid": uuid}), nil
+}
+
+func mcpCancelTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uuid, err := req.RequireString("uuid")
+	if err != nil {
+		return mcp.NewToolResultError("uuid is required"), nil
+	}
+	if err := cancelTask(uuid); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return writeResult(map[string]string{"status": "canceled", "uuid": uuid}), nil
 }
 
 func mcpTrashTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -535,12 +644,23 @@ func mcpTrashTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 	return writeResult(map[string]string{"status": "trashed", "uuid": uuid}), nil
 }
 
+func mcpPurgeTask(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uuid, err := req.RequireString("uuid")
+	if err != nil {
+		return mcp.NewToolResultError("uuid is required"), nil
+	}
+	if err := purgeTask(uuid); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return writeResult(map[string]string{"status": "purged", "uuid": uuid}), nil
+}
+
 func mcpMoveToToday(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	uuid, err := req.RequireString("uuid")
 	if err != nil {
 		return mcp.NewToolResultError("uuid is required"), nil
 	}
-	if err := moveTaskToToday(uuid); err != nil {
+	if err := moveTaskToToday(uuid, req.GetString("timezone", "")); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return writeResult(map[string]string{"status": "moved_to_today", "uuid": uuid}), nil
@@ -617,6 +737,47 @@ func mcpCreateArea(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	return writeResult(map[string]string{"status": "created", "uuid": uuid, "title": title}), nil
 }
 
+func mcpEditArea(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uuid, err := req.RequireString("uuid")
+	if err != nil {
+		return mcp.NewToolResultError("uuid is required"), nil
+	}
+	title, err := req.RequireString("title")
+	if err != nil {
+		return mcp.NewToolResultError("title is required"), nil
+	}
+	if err := editArea(uuid, title); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return writeResult(map[string]string{"status": "updated", "uuid": uuid, "title": title}), nil
+}
+
+func mcpEditTag(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uuid, err := req.RequireString("uuid")
+	if err != nil {
+		return mcp.NewToolResultError("uuid is required"), nil
+	}
+	if err := editTag(uuid, req.GetString("title", ""), req.GetString("shorthand", "")); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return writeResult(map[string]string{"status": "updated", "uuid": uuid}), nil
+}
+
+func mcpEditChecklistItem(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	uuid, err := req.RequireString("uuid")
+	if err != nil {
+		return mcp.NewToolResultError("uuid is required"), nil
+	}
+	title, err := req.RequireString("title")
+	if err != nil {
+		return mcp.NewToolResultError("title is required"), nil
+	}
+	if err := editChecklistItem(uuid, title); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return writeResult(map[string]string{"status": "updated", "uuid": uuid, "title": title}), nil
+}
+
 func mcpCreateTag(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	title, err := req.RequireString("title")
 	if err != nil {
@@ -652,6 +813,7 @@ func mcpCreateProject(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		req.GetString("when", ""),
 		req.GetString("deadline", ""),
 		req.GetString("area", ""),
+		req.GetString("timezone", ""),
 	)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -884,8 +1046,47 @@ func countStatus(checks []smokeCheck, status string) int {
 // MCP server setup
 // ---------------------------------------------------------------------------
 
+const (
+	mcpServerName    = "Things Cloud"
+	mcpServerTitle   = "Things Cloud (Things 3)"
+	mcpServerVersion = "1.3.1"
+)
+
+// tzParamDesc is the shared schema description for the per-call timezone input.
+const tzParamDesc = "IANA timezone (e.g. 'America/New_York') that defines what day 'today' is for this call. Always pass the user's timezone when known; falls back to the server's THINGS_TIMEZONE, then UTC."
+
+const mcpServerInstructions = `Read/write access to a Things 3 account via Things Cloud sync.
+
+Conventions:
+- Entities are referenced by Things Base58 UUIDs. Get UUIDs from the list, search, and get tools — never invent them. Writes are rejected when the target UUID does not exist in synced state.
+- 'when' controls scheduling (today, anytime, someday, inbox, or YYYY-MM-DD; a future date lands in Upcoming). 'deadline' is a hard due date — only set it when the user explicitly asks for one.
+- Checklist items are lightweight checkboxes inside a task. Subtasks are full tasks created via things_create_task with parent_task.
+- 'reminder' ("HH:MM", 24h) sets a notification time and needs a dated 'when' (today or YYYY-MM-DD); dropping the date drops the reminder.
+- Headings live inside projects; assign tasks to one via the 'heading' parameter on create/edit. things_list_project_tasks returns headings alongside tasks, and each task's heading_id shows where it sits.
+- In task output, project_id holds the direct parent: a project UUID, or the parent task's UUID for subtasks.
+- Trashing a task is reversible (things_untrash_task). Purging a task and deleting a checklist item are PERMANENT — prefer trash unless the user explicitly wants permanent deletion.
+- things_cancel_task logs a task as "won't do"; things_uncomplete_task reopens completed or canceled tasks.
+- things_smoke_test writes to the real account (it creates, edits, completes, and trashes a "[smoke-test]" task); run it only as a diagnostic.
+- Reads sync from Things Cloud on demand, throttled to at most one sync every few seconds; reads immediately after a write are already fresh.
+- Calendar days ('today', deadline validation, repeat anchors) resolve in a timezone. Pass the user's IANA timezone via the 'timezone' parameter on create/edit/move-to-today whenever you know it; otherwise the server falls back to its THINGS_TIMEZONE setting, then UTC. If "today" lands on the wrong day, the timezone is wrong — pass it explicitly or use a YYYY-MM-DD date.`
+
 func newMCPHandler() http.Handler {
-	s := server.NewMCPServer("Things Cloud", "1.1.0")
+	hooks := &server.Hooks{}
+	// mcp-go's initialize response only carries name and version; fill in the
+	// display title and icon here.
+	hooks.AddAfterInitialize(func(_ context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+		result.ServerInfo.Title = mcpServerTitle
+		result.ServerInfo.Icons = []mcp.Icon{{
+			Src:      thingsIconDataURI,
+			MIMEType: "image/png",
+			Sizes:    []string{"128x128"},
+		}}
+	})
+
+	s := server.NewMCPServer(mcpServerName, mcpServerVersion,
+		server.WithInstructions(mcpServerInstructions),
+		server.WithHooks(hooks),
+	)
 
 	// --- Read tools ---
 
@@ -1007,7 +1208,7 @@ func newMCPHandler() http.Handler {
 	), mcpListAllTasks)
 
 	s.AddTool(mcp.NewTool("things_list_project_tasks",
-		mcp.WithDescription("List tasks in a specific Things project"),
+		mcp.WithDescription("List the contents of a Things project: its tasks and its headings (type 'heading'). Tasks under a heading carry that heading's UUID in heading_id."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("project_uuid",
 			mcp.Required(),
@@ -1039,6 +1240,23 @@ func newMCPHandler() http.Handler {
 			mcp.Min(0),
 		),
 	), mcpListAreaTasks)
+
+	s.AddTool(mcp.NewTool("things_list_tag_tasks",
+		mcp.WithDescription("List open tasks carrying a specific Things tag"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("tag_uuid",
+			mcp.Required(),
+			mcp.Description("UUID of the tag (find it via things_list_tags)"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of tasks to return"),
+			mcp.Min(0),
+		),
+		mcp.WithNumber("offset",
+			mcp.Description("Number of tasks to skip before returning results"),
+			mcp.Min(0),
+		),
+	), mcpListTagTasks)
 
 	s.AddTool(mcp.NewTool("things_list_completed",
 		mcp.WithDescription("List recently completed tasks, ordered by completion date (most recent first)"),
@@ -1113,11 +1331,20 @@ func newMCPHandler() http.Handler {
 		mcp.WithString("parent_task",
 			mcp.Description("Parent task UUID to create this as a subtask — a full nested task with its own dates, tags, and notes. For simple checkboxes within a task, use things_create_checklist_item instead. Takes precedence over project."),
 		),
+		mcp.WithString("heading",
+			mcp.Description("Heading UUID to place the task under (headings live inside projects; find them via things_list_project_tasks). Set project too if the task is not already in the heading's project."),
+		),
 		mcp.WithString("tags",
 			mcp.Description("Comma-separated tag UUIDs"),
 		),
 		mcp.WithString("repeat",
 			mcp.Description("Recurrence rule. Accepts: 'daily', 'weekly', 'monthly', 'yearly', or 'every N days/weeks/months/years'. Append 'until YYYY-MM-DD' for an inclusive end date and/or 'after completion' for repeat-after-completion mode (e.g. 'daily until 2026-02-24 after completion'). Weekly defaults to the current weekday, monthly to the current day of month. Repeating tasks cannot be created in inbox."),
+		),
+		mcp.WithString("reminder",
+			mcp.Description("Reminder time in 24h HH:MM format (e.g. '17:00'). Requires a dated 'when' (today or YYYY-MM-DD); Things fires the notification at this time on the scheduled day."),
+		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
 		),
 	), mcpCreateTask)
 
@@ -1148,10 +1375,13 @@ func newMCPHandler() http.Handler {
 			mcp.Description("Hard deadline in YYYY-MM-DD format, or 'none' to clear an existing deadline. Only use when the user explicitly mentions a deadline or due date — not for general scheduling."),
 		),
 		mcp.WithString("project",
-			mcp.Description("New project UUID"),
+			mcp.Description("New project UUID, or 'none' to remove the task from its project"),
 		),
 		mcp.WithString("parent_task",
-			mcp.Description("Move task under a parent task (make it a subtask). Takes precedence over project."),
+			mcp.Description("Move task under a parent task (make it a subtask), or 'none' to detach. Takes precedence over project."),
+		),
+		mcp.WithString("heading",
+			mcp.Description("Heading UUID to place the task under, or 'none' to move it out of its heading. Headings live inside projects; the task should belong to the same project."),
 		),
 		mcp.WithString("area",
 			mcp.Description("Area UUID to assign the task to, or 'none' to remove from area"),
@@ -1162,7 +1392,21 @@ func newMCPHandler() http.Handler {
 		mcp.WithString("repeat",
 			mcp.Description("Recurrence rule. Accepts: 'daily', 'weekly', 'monthly', 'yearly', 'every N days/weeks/months/years', or 'none' to clear. Append 'until YYYY-MM-DD' for an inclusive end date and/or 'after completion' for repeat-after-completion mode. Repeating tasks cannot be moved to inbox."),
 		),
+		mcp.WithString("reminder",
+			mcp.Description("Reminder time in 24h HH:MM format (e.g. '17:00'), or 'none' to remove it. The task must keep a dated 'when' (today or YYYY-MM-DD); removing the date also removes the reminder."),
+		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
+		),
 	), mcpEditTask)
+
+	s.AddTool(mcp.NewTool("things_cancel_task",
+		mcp.WithDescription("Mark a Things task as canceled — it moves to the Logbook as 'won't do' instead of completed"),
+		mcp.WithString("uuid",
+			mcp.Required(),
+			mcp.Description("UUID of the task to cancel"),
+		),
+	), mcpCancelTask)
 
 	s.AddTool(mcp.NewTool("things_trash_task",
 		mcp.WithDescription("Move a Things task to the trash"),
@@ -1173,11 +1417,23 @@ func newMCPHandler() http.Handler {
 		),
 	), mcpTrashTask)
 
+	s.AddTool(mcp.NewTool("things_purge_task",
+		mcp.WithDescription("PERMANENTLY delete a Things task. This cannot be undone — the task is erased from all synced devices, not moved to trash. Prefer things_trash_task (reversible) unless the user explicitly asks for permanent deletion."),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("uuid",
+			mcp.Required(),
+			mcp.Description("UUID of the task to permanently delete"),
+		),
+	), mcpPurgeTask)
+
 	s.AddTool(mcp.NewTool("things_move_to_today",
 		mcp.WithDescription("Move a Things task to the Today view"),
 		mcp.WithString("uuid",
 			mcp.Required(),
 			mcp.Description("UUID of the task to move"),
+		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
 		),
 	), mcpMoveToToday)
 
@@ -1206,7 +1462,7 @@ func newMCPHandler() http.Handler {
 	), mcpMoveToInbox)
 
 	s.AddTool(mcp.NewTool("things_uncomplete_task",
-		mcp.WithDescription("Mark a completed Things task as open again"),
+		mcp.WithDescription("Mark a completed or canceled Things task as open again"),
 		mcp.WithString("uuid",
 			mcp.Required(),
 			mcp.Description("UUID of the task to uncomplete"),
@@ -1246,6 +1502,32 @@ func newMCPHandler() http.Handler {
 		),
 	), mcpCreateTag)
 
+	s.AddTool(mcp.NewTool("things_edit_area",
+		mcp.WithDescription("Rename an existing area in Things"),
+		mcp.WithString("uuid",
+			mcp.Required(),
+			mcp.Description("UUID of the area to edit"),
+		),
+		mcp.WithString("title",
+			mcp.Required(),
+			mcp.Description("New area title"),
+		),
+	), mcpEditArea)
+
+	s.AddTool(mcp.NewTool("things_edit_tag",
+		mcp.WithDescription("Edit an existing tag in Things — rename it and/or change its keyboard shortcut"),
+		mcp.WithString("uuid",
+			mcp.Required(),
+			mcp.Description("UUID of the tag to edit"),
+		),
+		mcp.WithString("title",
+			mcp.Description("New tag title"),
+		),
+		mcp.WithString("shorthand",
+			mcp.Description("New keyboard shortcut, or 'none' to remove it"),
+		),
+	), mcpEditTag)
+
 	s.AddTool(mcp.NewTool("things_create_heading",
 		mcp.WithDescription("Create a heading within a project in Things"),
 		mcp.WithString("title",
@@ -1276,6 +1558,9 @@ func newMCPHandler() http.Handler {
 		mcp.WithString("area",
 			mcp.Description("Area UUID to assign the project to"),
 		),
+		mcp.WithString("timezone",
+			mcp.Description(tzParamDesc),
+		),
 	), mcpCreateProject)
 
 	// --- Search tools ---
@@ -1302,6 +1587,18 @@ func newMCPHandler() http.Handler {
 			mcp.Description("UUID of the task to add the checklist item to"),
 		),
 	), mcpCreateChecklistItem)
+
+	s.AddTool(mcp.NewTool("things_edit_checklist_item",
+		mcp.WithDescription("Rename a checklist item (checkbox) inside a task"),
+		mcp.WithString("uuid",
+			mcp.Required(),
+			mcp.Description("UUID of the checklist item to rename"),
+		),
+		mcp.WithString("title",
+			mcp.Required(),
+			mcp.Description("New checklist item text"),
+		),
+	), mcpEditChecklistItem)
 
 	s.AddTool(mcp.NewTool("things_complete_checklist_item",
 		mcp.WithDescription("Mark a checklist item (checkbox) as completed"),

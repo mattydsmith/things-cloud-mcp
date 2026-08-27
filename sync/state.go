@@ -55,7 +55,7 @@ func (st *State) AllTasks(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -70,7 +70,7 @@ func (st *State) AllProjects(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 1 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -108,6 +108,17 @@ func (st *State) AllAreasWithOpts(opts QueryOpts) ([]*things.Area, error) {
 		}
 		areas = append(areas, &a)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	readSyncer := st.syncer.readSyncer()
+	for _, a := range areas {
+		var err error
+		if a.TagIDs, err = readSyncer.loadAreaTagIDs(a.UUID); err != nil {
+			return nil, err
+		}
+	}
 	return areas, nil
 }
 
@@ -121,7 +132,7 @@ func (st *State) AllTagsWithOpts(opts QueryOpts) ([]*things.Tag, error) {
 	st.syncer.mu.RLock()
 	defer st.syncer.mu.RUnlock()
 
-	query := `SELECT uuid, title, shortcut FROM tags WHERE deleted = 0 ORDER BY "index"`
+	query := `SELECT uuid, title, shortcut, parent_uuid FROM tags WHERE deleted = 0 ORDER BY "index"`
 	args := []any{}
 	query, args = paginateQuery(query, args, opts)
 
@@ -134,8 +145,12 @@ func (st *State) AllTagsWithOpts(opts QueryOpts) ([]*things.Tag, error) {
 	var tags []*things.Tag
 	for rows.Next() {
 		var t things.Tag
-		if err := rows.Scan(&t.UUID, &t.Title, &t.ShortHand); err != nil {
+		var parentUUID sql.NullString
+		if err := rows.Scan(&t.UUID, &t.Title, &t.ShortHand, &parentUUID); err != nil {
 			return nil, err
+		}
+		if parentUUID.Valid && parentUUID.String != "" {
+			t.ParentTagIDs = []string{parentUUID.String}
 		}
 		tags = append(tags, &t)
 	}
@@ -147,7 +162,7 @@ func (st *State) TasksInInbox(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 0 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -170,7 +185,7 @@ func (st *State) TasksInToday(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -201,7 +216,7 @@ func (st *State) TasksInAnytime(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -223,7 +238,7 @@ func (st *State) TasksInSomeday(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{nowUnix, nowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -246,7 +261,7 @@ func (st *State) TasksInUpcoming(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{nowUnix, nowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -256,12 +271,14 @@ func (st *State) TasksInUpcoming(opts QueryOpts) ([]*things.Task, error) {
 	return st.queryTasks(query, args...)
 }
 
-// TasksInProject returns tasks belonging to a project
+// TasksInProject returns the contents of a project: its tasks and its
+// headings (type 2). Headings are included so callers can discover their
+// UUIDs and correlate tasks' heading assignments.
 func (st *State) TasksInProject(projectUUID string, opts QueryOpts) ([]*things.Task, error) {
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND project_uuid = ? AND deleted = 0`
+	query := `SELECT uuid FROM tasks WHERE type IN (0, 2) AND project_uuid = ? AND deleted = 0`
 	args := []any{projectUUID}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -285,7 +302,7 @@ func (st *State) TasksInArea(areaUUID string, opts QueryOpts) ([]*things.Task, e
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND area_uuid = ? AND deleted = 0`
 	args := []any{areaUUID}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -304,6 +321,23 @@ func (st *State) TasksInArea(areaUUID string, opts QueryOpts) ([]*things.Task, e
 	return st.scanTaskUUIDs(rows)
 }
 
+// TasksWithTag returns tasks carrying the given tag
+func (st *State) TasksWithTag(tagUUID string, opts QueryOpts) ([]*things.Task, error) {
+	query := `SELECT t.uuid FROM tasks t
+		JOIN task_tags tt ON tt.task_uuid = t.uuid
+		WHERE tt.tag_uuid = ? AND t.type = 0 AND t.deleted = 0`
+	args := []any{tagUUID}
+	if !opts.IncludeCompleted {
+		query += " AND t.status NOT IN (2, 3)"
+	}
+	if !opts.IncludeTrashed {
+		query += " AND t.in_trash = 0"
+	}
+	query += ` ORDER BY t."index"`
+	query, args = paginateQuery(query, args, opts)
+	return st.queryTasks(query, args...)
+}
+
 // CompletedTasks returns completed tasks, ordered by completion date (most recent first)
 func (st *State) CompletedTasks(limit int) ([]*things.Task, error) {
 	return st.CompletedTasksInRange(limit, nil, nil)
@@ -315,7 +349,7 @@ func (st *State) CompletedTasksInRange(limit int, completedAfter, completedBefor
 	if limit <= 0 {
 		limit = 50
 	}
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND status = 3 AND deleted = 0 AND in_trash = 0
+	query := `SELECT uuid FROM tasks WHERE type = 0 AND status IN (2, 3) AND deleted = 0 AND in_trash = 0
 		AND completion_date IS NOT NULL`
 	args := []any{}
 	if completedAfter != nil {
@@ -338,6 +372,13 @@ func (st *State) CompletedTasksInRange(limit int, completedAfter, completedBefor
 	}
 	defer rows.Close()
 	return st.scanTaskUUIDs(rows)
+}
+
+// ChecklistItem retrieves a checklist item by UUID
+func (st *State) ChecklistItem(uuid string) (*things.CheckListItem, error) {
+	st.syncer.mu.RLock()
+	defer st.syncer.mu.RUnlock()
+	return st.syncer.readSyncer().getChecklistItem(uuid)
 }
 
 // ChecklistItems returns checklist items for a task

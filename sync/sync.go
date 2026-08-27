@@ -102,35 +102,41 @@ func (s *Syncer) Sync() ([]Change, error) {
 		return nil, err
 	}
 
-	// Reuse stored history ID if available (avoids extra /account call)
-	// Things.app does this - it goes straight to /items with the stored history ID
+	// Resolve the account's current history key once per process. The key
+	// changes when the cloud database is replaced (e.g. Things' start-over
+	// recovery flow); blindly reusing a stored key would follow a dead
+	// stream forever.
 	if s.history == nil {
-		if storedHistoryID != "" {
-			// Use stored history ID directly - no network call needed
-			s.history = s.client.HistoryWithID(storedHistoryID)
-		} else {
-			// First sync - need to fetch history ID from server
-			var h *things.History
-			var err error
-			for attempt := 0; attempt < maxRetries; attempt++ {
-				h, err = s.client.OwnHistory()
-				if err == nil {
-					break
-				}
-				if !isRetryableError(err) {
-					return nil, err
-				}
-				time.Sleep(retryBaseWait * time.Duration(1<<attempt))
+		var h *things.History
+		var err error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			h, err = s.client.OwnHistory()
+			if err == nil {
+				break
 			}
-			if err != nil {
-				return nil, err
+			if !isRetryableError(err) {
+				break
 			}
+			time.Sleep(retryBaseWait * time.Duration(1<<attempt))
+		}
+		switch {
+		case err == nil:
 			s.history = h
+		case storedHistoryID != "":
+			// Offline fallback: keep syncing the stream we already know.
+			s.history = s.client.HistoryWithID(storedHistoryID)
+		default:
+			return nil, err
 		}
 	}
 
-	// If history changed (shouldn't happen normally), start fresh
+	// The account moved to a new history stream (cloud database replaced):
+	// the old mirror describes a stream nobody writes anymore, so drop it
+	// and rebuild from the new stream's beginning.
 	if storedHistoryID != "" && storedHistoryID != s.history.ID {
+		if err := s.resetLocalState(); err != nil {
+			return nil, err
+		}
 		startIndex = 0
 	}
 

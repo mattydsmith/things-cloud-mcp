@@ -1,6 +1,6 @@
 package sync
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 const schema = `
 -- Schema version tracking
@@ -144,6 +144,20 @@ DELETE FROM change_log;
 DELETE FROM sync_state;
 `
 
+// migration5 invalidates the local cache so Task7 items (written by Things
+// 3.23+ clients and previously dropped as unknown kinds) are ingested by a
+// full resync from Things Cloud history.
+const migration5 = `
+DELETE FROM task_tags;
+DELETE FROM area_tags;
+DELETE FROM checklist_items;
+DELETE FROM tasks;
+DELETE FROM areas;
+DELETE FROM tags;
+DELETE FROM change_log;
+DELETE FROM sync_state;
+`
+
 func (s *Syncer) migrate() error {
 	// Check current version
 	var version int
@@ -178,8 +192,20 @@ func (s *Syncer) migrate() error {
 			return err
 		}
 	}
+	if version < 5 {
+		if _, err := s.db.Exec(migration5); err != nil {
+			return err
+		}
+	}
 
 	// Update schema version
 	_, err = s.db.Exec("UPDATE schema_version SET version = ?", schemaVersion)
+	return err
+}
+
+// resetLocalState wipes the local mirror and sync cursor so state can be
+// rebuilt from a different (or replaced) history stream.
+func (s *Syncer) resetLocalState() error {
+	_, err := s.db.Exec(migration5)
 	return err
 }

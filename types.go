@@ -59,7 +59,10 @@ var (
 	ItemKindChecklistItem2 ItemKind = "ChecklistItem2"
 	ItemKindChecklistItem3 ItemKind = "ChecklistItem3"
 	// ItemKindTask identifies a Task or Subtask
-	ItemKindTask      ItemKind = "Task6"
+	ItemKindTask ItemKind = "Task6"
+	// ItemKindTask7 is the Task revision written by Things 3.23+ clients;
+	// its payload is field-identical to Task6.
+	ItemKindTask7     ItemKind = "Task7"
 	ItemKindTask4     ItemKind = "Task4"
 	ItemKindTask3     ItemKind = "Task3"
 	ItemKindTaskPlain ItemKind = "Task"
@@ -68,7 +71,8 @@ var (
 	ItemKindArea3     ItemKind = "Area3"
 	ItemKindAreaPlain ItemKind = "Area"
 	// ItemKindSettings  identifies a setting
-	ItemKindSettings ItemKind = "Settings3"
+	ItemKindSettings  ItemKind = "Settings3"
+	ItemKindSettings5 ItemKind = "Settings5"
 	// ItemKindTag identifies a Tag
 	ItemKindTag       ItemKind = "Tag3"
 	ItemKindTag4      ItemKind = "Tag4"
@@ -200,6 +204,7 @@ type Task struct {
 	TodayIndexReference *time.Time // tir: when set to today, task appears in Today view
 	DueOrder            int
 	AlarmTimeOffset     *int
+	Repeater            *RepeaterConfiguration
 	TagIDs              []string
 	RecurrenceIDs       []string
 	DelegateIDs         []string
@@ -245,6 +250,8 @@ type TaskActionItemPayload struct {
 	completionDateSet         bool                   `json:"-"`
 	deadlineDateSet           bool                   `json:"-"`
 	taskIRSet                 bool                   `json:"-"`
+	alarmTimeOffsetSet        bool                   `json:"-"`
+	repeaterSet               bool                   `json:"-"`
 	//  {
 	//      "acrd": null,
 	//      "ar": [],
@@ -297,6 +304,8 @@ func (p *TaskActionItemPayload) UnmarshalJSON(bs []byte) error {
 	_, p.completionDateSet = raw["sp"]
 	_, p.deadlineDateSet = raw["dd"]
 	_, p.taskIRSet = raw["tir"]
+	_, p.alarmTimeOffsetSet = raw["ato"]
+	_, p.repeaterSet = raw["rr"]
 	return nil
 }
 
@@ -318,6 +327,16 @@ func (p TaskActionItemPayload) HasDeadlineDate() bool {
 // HasTaskIR reports whether the payload explicitly included tir.
 func (p TaskActionItemPayload) HasTaskIR() bool {
 	return p.taskIRSet || p.TaskIR != nil
+}
+
+// HasAlarmTimeOffset reports whether the payload explicitly included ato.
+func (p TaskActionItemPayload) HasAlarmTimeOffset() bool {
+	return p.alarmTimeOffsetSet || p.AlarmTimeOffset != nil
+}
+
+// HasRepeater reports whether the payload explicitly included rr.
+func (p TaskActionItemPayload) HasRepeater() bool {
+	return p.repeaterSet || p.Repeater != nil
 }
 
 // TaskActionItem describes an event on a Task
@@ -378,10 +397,11 @@ type Setting struct{}
 // 2|visible|INTEGER|0||0
 // 3|index|INTEGER|0||0
 type Area struct {
-	UUID  string
-	Title string
-	Tags  []*Tag
-	Tasks []*Task
+	UUID   string
+	Title  string
+	TagIDs []string
+	Tags   []*Tag
+	Tasks  []*Task
 }
 
 // AreaActionItemPayload describes the payload for modifying Areas

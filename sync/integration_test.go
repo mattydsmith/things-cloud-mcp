@@ -92,8 +92,11 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("process task with tir stores TodayIndexReference separately", func(t *testing.T) {
-		now := time.Now()
-		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		// Dates must be UTC midnights: that's what production writes, and
+		// change detection classifies "today" in UTC. Local midnights make
+		// this test fail whenever the local date is ahead of the UTC date.
+		now := time.Now().UTC()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		yesterday := today.Add(-24 * time.Hour)
 
 		payload := things.TaskActionItemPayload{}

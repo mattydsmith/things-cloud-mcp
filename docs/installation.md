@@ -55,10 +55,18 @@ When prompted, choose a region close to you. The included `fly.toml` configures 
 fly secrets set THINGS_USERNAME='your-things-email' THINGS_PASSWORD='your-things-password'
 ```
 
-Optionally set an API key for the REST endpoints:
+Set an API key to protect the MCP and REST endpoints (strongly recommended — without it, anyone who knows your server URL can read and modify your tasks):
 
 ```bash
 fly secrets set API_KEY='your-chosen-api-key'
+```
+
+Any long random string works, e.g. `openssl rand -hex 32`.
+
+Set your fallback timezone so `when: "today"` means your today even when the client doesn't send one (MCP agents can pass a per-call `timezone`, which takes precedence):
+
+```bash
+fly secrets set THINGS_TIMEZONE='America/New_York'
 ```
 
 ### Deploy
@@ -78,25 +86,61 @@ curl https://your-app-name.fly.dev/
 
 ## 4. Connect to Claude
 
+If you set an `API_KEY`, every MCP client needs to present it. Clients that support custom headers should send `Authorization: Bearer <API_KEY>`; clients that can't set headers (claude.ai custom connectors) can pass it in the URL instead: `https://your-app-name.fly.dev/mcp?key=<API_KEY>`.
+
 ### Claude.ai (web)
 
+Claude.ai custom connectors don't support custom headers or bearer tokens, so the key goes in the connector URL:
+
 1. Go to **Settings > Connectors > Add custom connector**
-2. Set the URL to `https://your-app-name.fly.dev/mcp`
-3. Leave authentication fields empty (the MCP endpoint has no auth)
+2. Set the URL to `https://your-app-name.fly.dev/mcp?key=your-chosen-api-key` (or just `https://your-app-name.fly.dev/mcp` if you didn't set an `API_KEY`)
+3. Leave the OAuth authentication fields empty
 4. Save
 
 Then ask Claude: *"What's on my Things today?"*
 
 ### Claude Code (CLI)
 
-Add the server to your Claude Code MCP config (`~/.claude/mcp.json` or project-level):
+Add the server to your Claude Code MCP config (`~/.claude/mcp.json` or project-level), passing the key as a bearer header:
 
 ```json
 {
   "mcpServers": {
     "things": {
       "type": "url",
-      "url": "https://your-app-name.fly.dev/mcp"
+      "url": "https://your-app-name.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer your-chosen-api-key"
+      }
+    }
+  }
+}
+```
+
+Or from the command line:
+
+```bash
+claude mcp add --transport http things https://your-app-name.fly.dev/mcp \
+  --header "Authorization: Bearer your-chosen-api-key"
+```
+
+If you didn't set an `API_KEY`, omit the `headers` block / `--header` flag.
+
+### Claude Desktop
+
+Claude Desktop reaches remote servers through `mcp-remote`. In **Settings > Developer > Edit Config**:
+
+```json
+{
+  "mcpServers": {
+    "things": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://your-app-name.fly.dev/mcp",
+        "--header",
+        "Authorization: Bearer your-chosen-api-key"
+      ]
     }
   }
 }
@@ -123,7 +167,9 @@ Once connected, Claude has access to 36 tools:
 
 ## Privacy and credentials
 
-The server needs your Things Cloud email and password to sync your tasks. Since you're deploying this on your own Fly.io account, your credentials are stored as encrypted secrets on infrastructure you control — they're not shared with anyone. The MCP endpoint itself has no authentication, so consider that anyone with your server URL could access your tasks. If that's a concern, you can set an `API_KEY` and restrict access to the REST API.
+The server needs your Things Cloud email and password to sync your tasks. Since you're deploying this on your own Fly.io account, your credentials are stored as encrypted secrets on infrastructure you control — they're not shared with anyone.
+
+Set an `API_KEY` to require authentication on both the MCP endpoint (`/mcp`) and the REST API (`/api/*`). Without it, anyone who discovers your server URL can read and modify your tasks. Note that when the key is passed as a `?key=` query parameter (the claude.ai connector setup), it is part of the URL — treat that URL as a secret and rotate the key (`fly secrets set API_KEY=...`) if it leaks.
 
 ## Cost
 
@@ -135,7 +181,9 @@ Fly.io doesn't bill you if your monthly usage is under $5. The server scales to 
 |----------|----------|-------------|
 | `THINGS_USERNAME` | Yes | Your Things account email |
 | `THINGS_PASSWORD` | Yes | Your Things account password |
-| `API_KEY` | No | Bearer token for REST API endpoints (`/api/*`). If unset, no auth required. |
+| `API_KEY` | No | Auth token for the MCP endpoint (`/mcp`) and REST API (`/api/*`). Sent as `Authorization: Bearer <key>`, or as `?key=<key>` on `/mcp` for clients that can't set headers. If unset, no auth required (not recommended). |
+| `THINGS_TIMEZONE` | No | Fallback IANA timezone (e.g. `America/New_York`) for resolving calendar days — `when: "today"`, past-deadline checks, repeat anchors. MCP clients can pass a per-call `timezone` parameter, which wins; this variable covers calls that omit it. Defaults to UTC, which schedules an evening "today" onto tomorrow for anyone west of UTC — set it. |
+| `SYNC_MIN_INTERVAL` | No | Minimum seconds between on-demand syncs against Things Cloud (default: `2`). Bursts of reads reuse the local mirror instead of re-syncing; reads right after a write are always fresh. |
 | `PORT` | No | Server port (default: `8080`) |
 | `DEBUG` | No | Set to `true` for verbose HTTP logging |
 

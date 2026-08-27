@@ -147,6 +147,11 @@ Once connected, Claude can do pretty much everything you'd do in the Things app:
 - **Read surfaces support pagination.** REST list endpoints and the corresponding MCP list tools accept optional `limit` and `offset` values.
 - **Old `tir`/`sr` cache corruption is repaired automatically.** Opening a pre-fix sync database triggers a one-time local cache reset and full resync from Things Cloud history.
 - **Soft-deleted rows are purged from the local cache after sync.** This keeps the SQLite mirror from growing forever while preserving normal sync semantics.
+- **Writes verify their targets exist.** Completing, editing, trashing, or moving a UUID that isn't in synced state is rejected instead of appending an orphan event to the Things Cloud history. Referenced projects, parent tasks, areas, and tags are checked too, including entity type (e.g. a `project` argument must actually be a project).
+- **Editing a task's project no longer wipes its schedule.** A scheduled task keeps its date when moved between projects; only tasks leaving the inbox are rescheduled to Anytime (inbox tasks can't live in projects).
+- **Calendar days resolve in the user's timezone.** `when: "today"`, past-deadline validation, and repeat anchors use the request's `timezone` parameter when the client sends one, falling back to `THINGS_TIMEZONE` (IANA name), then UTC — so an evening "today" no longer lands on tomorrow. An explicitly passed invalid timezone is rejected rather than silently defaulted.
+- **On-demand syncs are throttled.** Bursts of reads trigger at most one Things Cloud sync per `SYNC_MIN_INTERVAL` seconds (default 2), avoiding 429 rate limiting; post-write refreshes bypass the throttle so writes read back immediately.
+- **`/mcp` request bodies are capped at 1 MB**, matching the REST endpoints.
 
 ## Getting started
 
@@ -173,7 +178,7 @@ See **[docs/skills.md](docs/skills.md)** for a step-by-step guide to creating yo
 
 ## REST API
 
-All `/api/*` endpoints require `Authorization: Bearer <API_KEY>` when `API_KEY` is set.
+All `/api/*` endpoints require `Authorization: Bearer <API_KEY>` when `API_KEY` is set. The same key also protects the MCP endpoint (`/mcp`), which additionally accepts it as a `?key=<API_KEY>` query parameter for clients that can't send custom headers (e.g. claude.ai custom connectors). If `API_KEY` is unset, both surfaces are open — see [docs/installation.md](docs/installation.md) for setup.
 
 See **[docs/endpoints-and-things-cloud.md](docs/endpoints-and-things-cloud.md)** for how the REST and MCP surfaces sync from Things Cloud history, answer reads from the local SQLite mirror, and commit writes back to the cloud.
 
@@ -215,6 +220,12 @@ The underlying Go SDK can be used directly as a library. See **[docs/sdk.md](doc
 ./tests/test-mcp-read.sh       # All MCP read tools (29 checks)
 ./tests/test-mcp-protocol.sh   # JSON-RPC handshake and error handling (11 checks)
 API_KEY=your-key ./tests/test-api.sh  # All REST endpoints (18 checks)
+```
+
+The MCP test scripts also honor `API_KEY` — set it when the target server was deployed with one:
+
+```bash
+API_KEY=your-key ./tests/test-smoke.sh
 ```
 
 ## Local development

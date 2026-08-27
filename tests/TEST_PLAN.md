@@ -16,6 +16,8 @@ All tests live in the `tests/` directory and run against a deployed server URL t
 
 Each script exits with code 0 on success, 1 on any failure.
 
+If the target server was deployed with an `API_KEY`, set the same `API_KEY` env var for the MCP scripts too — they send it as an `Authorization: Bearer` header on every `/mcp` call.
+
 ## Test Results Log
 
 All scripts append results to `tests/test-results.log`. Each line records:

@@ -61,7 +61,7 @@ func (s *Syncer) processItems(items []things.Item, baseIndex int) ([]Change, err
 // processItem routes an item to the correct handler based on its Kind.
 func (s *Syncer) processItem(item things.Item, serverIndex int, ts time.Time) ([]Change, error) {
 	switch item.Kind {
-	case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+	case things.ItemKindTask, things.ItemKindTask7, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 		return s.processTaskItem(item, serverIndex, ts)
 	case things.ItemKindArea, things.ItemKindArea3, things.ItemKindAreaPlain:
 		return s.processAreaItem(item, serverIndex, ts)
@@ -71,7 +71,7 @@ func (s *Syncer) processItem(item things.Item, serverIndex int, ts time.Time) ([
 		return s.processChecklistItem(item, serverIndex, ts)
 	case things.ItemKindTombstone:
 		return s.processTombstone(item, serverIndex, ts)
-	case things.ItemKindSettings:
+	case things.ItemKindSettings, things.ItemKindSettings5:
 		// Settings items are ignored for now
 		return nil, nil
 	default:
@@ -155,11 +155,15 @@ func (s *Syncer) processAreaItem(item things.Item, serverIndex int, ts time.Time
 	if old != nil {
 		// Copy old state
 		newArea.Title = old.Title
+		newArea.TagIDs = old.TagIDs
 	}
 
 	// Apply payload fields
 	if payload.Title != nil {
 		newArea.Title = *payload.Title
+	}
+	if payload.TagIDs != nil {
+		newArea.TagIDs = payload.TagIDs
 	}
 
 	// Save the new state
@@ -381,6 +385,7 @@ func applyTaskPayload(old *things.Task, uuid string, p things.TaskActionItemPayl
 		t.TodayIndexReference = old.TodayIndexReference
 		t.DueOrder = old.DueOrder
 		t.AlarmTimeOffset = old.AlarmTimeOffset
+		t.Repeater = old.Repeater
 		t.TagIDs = old.TagIDs
 		t.RecurrenceIDs = old.RecurrenceIDs
 		t.DelegateIDs = old.DelegateIDs
@@ -457,8 +462,11 @@ func applyTaskPayload(old *things.Task, uuid string, p things.TaskActionItemPayl
 	if p.DueOrder != nil {
 		t.DueOrder = *p.DueOrder
 	}
-	if p.AlarmTimeOffset != nil {
+	if p.HasAlarmTimeOffset() {
 		t.AlarmTimeOffset = p.AlarmTimeOffset
+	}
+	if p.HasRepeater() {
+		t.Repeater = p.Repeater
 	}
 	if p.TagIDs != nil {
 		t.TagIDs = p.TagIDs

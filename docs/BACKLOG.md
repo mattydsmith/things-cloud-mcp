@@ -1,5 +1,16 @@
 # Things MCP — Backlog
 
+## Shipped 2026-07-06 (MCP/SDK parity batch)
+
+- ~~Reminders~~ — `reminder` ("HH:MM") on `things_create_task`/`things_edit_task`, surfaced in task output; requires a dated `when`. Wire field `ato`; sync engine now honors explicit clears.
+- ~~Heading assignment~~ — `heading` parameter on create/edit (`agr` wire field), matching the CLI's `--heading`.
+- ~~Cancel task~~ — `things_cancel_task` (ss=2); uncomplete reopens canceled tasks.
+- ~~Area/tag rename~~ — `things_edit_area`, `things_edit_tag` (title + shorthand, `none` clears shorthand).
+- ~~Checklist item rename~~ — `things_edit_checklist_item`.
+- ~~Repeat rule in read output~~ — `repeat` field ("every 2 weeks until 2027-03-01"); sync engine now persists `rr`.
+- ~~Tasks by tag~~ — `things_list_tag_tasks` backed by `State.TasksWithTag`.
+- ~~Task purge~~ — `things_purge_task` (Tombstone2, destructive-hinted; permanent).
+
 ## Medium Priority
 
 ### ~~Add area assignment on task edit~~ (Done)

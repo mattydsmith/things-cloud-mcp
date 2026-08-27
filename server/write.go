@@ -8,9 +8,12 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	gosync "sync"
 	"time"
+	_ "time/tzdata" // THINGS_TIMEZONE must resolve inside the scratch container
 
 	thingscloud "github.com/arthursoares/things-cloud-sdk"
 	"github.com/google/uuid"
@@ -122,7 +125,10 @@ func isInvalidInput(err error) bool {
 
 func isBase58UUID(id string) bool {
 	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	if len(id) < 20 || len(id) > 32 {
+	// 128-bit UUIDs encode to at most 22 Base58 characters; the Things app's
+	// decoder hard-crashes (Swift precondition) on anything longer, so never
+	// let a longer identifier reach the wire.
+	if len(id) < 20 || len(id) > 22 {
 		return false
 	}
 	for i := 0; i < len(id); i++ {
@@ -145,6 +151,16 @@ func validateOptionalUUID(name, id string) error {
 		return nil
 	}
 	return validateUUID(name, id)
+}
+
+// normalizeOptionalUUID maps the "none" sentinel (accepted by
+// validateOptionalUUID) to empty, so payload builders never embed the
+// literal string "none" as an entity reference.
+func normalizeOptionalUUID(id string) string {
+	if id == "none" {
+		return ""
+	}
+	return id
 }
 
 func parseUUIDList(name, raw string) ([]string, error) {
@@ -184,48 +200,251 @@ func validateUUIDSlice(name string, ids []string) ([]string, error) {
 	return out, nil
 }
 
+// generateUUID returns a Things identifier: a UUIDv4 whose Base58 encoding
+// is naturally exactly 22 characters. Shorter encodings (UUIDs with small
+// leading bytes, ~3% of draws) are rejected and redrawn rather than padded:
+// under Bitcoin-style Base58 semantics a leading '1' denotes a leading zero
+// BYTE, so a padded "1" + 21 chars can decode to 17 bytes — more than a
+// 16-byte UUID — and the Things app's decoder hard-crashes on it.
 func generateUUID() string {
-	u := uuid.New()
 	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	n := new(big.Int).SetBytes(u[:])
 	base := big.NewInt(58)
-	mod := new(big.Int)
-	var encoded []byte
-	for n.Sign() > 0 {
-		n.DivMod(n, base, mod)
-		encoded = append(encoded, alphabet[mod.Int64()])
+	for {
+		u := uuid.New()
+		n := new(big.Int).SetBytes(u[:])
+		mod := new(big.Int)
+		var encoded []byte
+		for n.Sign() > 0 {
+			n.DivMod(n, base, mod)
+			encoded = append(encoded, alphabet[mod.Int64()])
+		}
+		if len(encoded) != 22 {
+			continue
+		}
+		for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
+			encoded[i], encoded[j] = encoded[j], encoded[i]
+		}
+		return string(encoded)
 	}
-	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
-		encoded[i], encoded[j] = encoded[j], encoded[i]
-	}
-	return string(encoded)
 }
 
-// syncForRead syncs before a read operation, logging any errors.
+const defaultSyncMinInterval = 2 * time.Second
+
+var (
+	// syncThrottleMu single-flights syncs against Things Cloud and guards
+	// lastSyncAt, so bursts of tool calls don't trip their rate limiting.
+	syncThrottleMu gosync.Mutex
+	lastSyncAt     time.Time
+
+	// doSync performs one sync against Things Cloud. Overridable in tests.
+	doSync = func() error {
+		_, err := syncer.Sync()
+		return err
+	}
+)
+
+// syncMinInterval reads SYNC_MIN_INTERVAL (whole seconds) on each call so
+// tests can vary it; invalid or unset values fall back to the default.
+func syncMinInterval() time.Duration {
+	raw := os.Getenv("SYNC_MIN_INTERVAL")
+	if raw == "" {
+		return defaultSyncMinInterval
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultSyncMinInterval
+	}
+	return time.Duration(n) * time.Second
+}
+
+// syncForRead refreshes local state before a read, skipping the round trip
+// to Things Cloud when the last successful sync is recent enough.
 // Returns the error so callers can optionally surface it.
 func syncForRead() error {
-	if _, err := syncer.Sync(); err != nil {
+	syncThrottleMu.Lock()
+	defer syncThrottleMu.Unlock()
+	if time.Since(lastSyncAt) < syncMinInterval() {
+		return nil
+	}
+	if err := doSync(); err != nil {
 		log.Printf("[SYNC] pre-read sync failed: %v", err)
 		return err
+	}
+	lastSyncAt = time.Now()
+	return nil
+}
+
+// syncAfterWrite syncs after a write to refresh local state. It bypasses the
+// throttle so the write is immediately visible to reads.
+// Errors are logged but not returned (best-effort refresh).
+func syncAfterWrite() {
+	syncThrottleMu.Lock()
+	defer syncThrottleMu.Unlock()
+	if err := doSync(); err != nil {
+		log.Printf("[SYNC] post-write refresh failed: %v", err)
+		return
+	}
+	lastSyncAt = time.Now()
+}
+
+// ---------------------------------------------------------------------------
+// Existence validation
+//
+// UUID arguments are format-checked by validateUUID, but a well-formed UUID
+// can still point at nothing. Writing an update for a nonexistent entity
+// appends a permanent orphan event to the Things Cloud history and reports
+// false success, so every write verifies its targets against synced local
+// state first.
+// ---------------------------------------------------------------------------
+
+// entityStore is the subset of *sync.State used for existence checks.
+type entityStore interface {
+	Task(uuid string) (*thingscloud.Task, error)
+	Area(uuid string) (*thingscloud.Area, error)
+	Tag(uuid string) (*thingscloud.Tag, error)
+	ChecklistItem(uuid string) (*thingscloud.CheckListItem, error)
+}
+
+// validationState returns entity lookups backed by local state, refreshed
+// best-effort (stale state still validates better than none). Overridable
+// in tests.
+var validationState = func() entityStore {
+	_ = syncForRead()
+	return syncer.State()
+}
+
+func requireTask(st entityStore, name, uuid string) (*thingscloud.Task, error) {
+	task, err := st.Task(uuid)
+	if err != nil {
+		return nil, fmt.Errorf("%s lookup failed: %w", name, err)
+	}
+	if task == nil {
+		return nil, invalidInputf("%s not found in synced state: %s", name, uuid)
+	}
+	return task, nil
+}
+
+func requireProject(st entityStore, name, uuid string) error {
+	task, err := requireTask(st, name, uuid)
+	if err != nil {
+		return err
+	}
+	if task.Type != thingscloud.TaskTypeProject {
+		return invalidInputf("%s is not a project: %s", name, uuid)
 	}
 	return nil
 }
 
-// syncAfterWrite syncs after a write to refresh local state.
-// Errors are logged but not returned (best-effort refresh).
-func syncAfterWrite() {
-	if _, err := syncer.Sync(); err != nil {
-		log.Printf("[SYNC] post-write refresh failed: %v", err)
+func requireHeading(st entityStore, name, uuid string) error {
+	task, err := requireTask(st, name, uuid)
+	if err != nil {
+		return err
 	}
+	if task.Type != thingscloud.TaskTypeHeading {
+		return invalidInputf("%s is not a heading: %s", name, uuid)
+	}
+	return nil
+}
+
+func requireArea(st entityStore, name, uuid string) error {
+	area, err := st.Area(uuid)
+	if err != nil {
+		return fmt.Errorf("%s lookup failed: %w", name, err)
+	}
+	if area == nil {
+		return invalidInputf("%s not found in synced state: %s", name, uuid)
+	}
+	return nil
+}
+
+func requireTag(st entityStore, name, uuid string) error {
+	tag, err := st.Tag(uuid)
+	if err != nil {
+		return fmt.Errorf("%s lookup failed: %w", name, err)
+	}
+	if tag == nil {
+		return invalidInputf("%s not found in synced state: %s", name, uuid)
+	}
+	return nil
+}
+
+func requireTags(st entityStore, name string, uuids []string) error {
+	for _, id := range uuids {
+		if err := requireTag(st, name, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireChecklistItem(st entityStore, uuid string) error {
+	item, err := st.ChecklistItem(uuid)
+	if err != nil {
+		return fmt.Errorf("checklist item lookup failed: %w", err)
+	}
+	if item == nil {
+		return invalidInputf("checklist item not found in synced state: %s", uuid)
+	}
+	return nil
 }
 
 func nowTs() float64 {
 	return float64(time.Now().UnixNano()) / 1e9
 }
 
-func todayMidnightUTC() int64 {
-	now := time.Now().UTC()
-	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Unix()
+// timeNow is the clock used for calendar-day resolution. Overridable in
+// tests to freeze the boundary cases.
+var timeNow = time.Now
+
+// tzWarnOnce keeps an invalid THINGS_TIMEZONE from spamming the log on
+// every write.
+var tzWarnOnce gosync.Once
+
+// thingsLocation returns the timezone used to resolve calendar days like
+// "today". Set THINGS_TIMEZONE to an IANA name (e.g. "America/New_York") —
+// the server usually runs in UTC, which is not the user's day for hours at
+// a stretch. Unset or invalid values fall back to UTC.
+func thingsLocation() *time.Location {
+	name := os.Getenv("THINGS_TIMEZONE")
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		tzWarnOnce.Do(func() {
+			log.Printf("[CONFIG] invalid THINGS_TIMEZONE %q (%v); falling back to UTC", name, err)
+		})
+		return time.UTC
+	}
+	return loc
+}
+
+// localCalendarDayUTC returns the calendar day of t as observed in loc,
+// encoded as UTC midnight — the encoding Things uses for all dates.
+func localCalendarDayUTC(t time.Time, loc *time.Location) time.Time {
+	lt := t.In(loc)
+	return time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// resolveLocation resolves a caller-supplied IANA timezone name for one
+// request. Empty means "use the server default" (THINGS_TIMEZONE, then UTC);
+// an unknown name is an input error rather than a silent fallback, because a
+// caller who names a timezone is trusting us to use exactly that one.
+func resolveLocation(name string) (*time.Location, error) {
+	if name == "" {
+		return thingsLocation(), nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, invalidInputf("invalid timezone %q (use an IANA name like America/New_York)", name)
+	}
+	return loc, nil
+}
+
+// todayMidnightIn returns today's date — today as observed in loc — encoded
+// as UTC midnight.
+func todayMidnightIn(loc *time.Location) int64 {
+	return localCalendarDayUTC(timeNow(), loc).Unix()
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +498,16 @@ func (u *taskUpdate) schedule(st int, sr, tir any) *taskUpdate {
 	return u
 }
 
+func (u *taskUpdate) reminder(seconds int) *taskUpdate {
+	u.fields["ato"] = seconds
+	return u
+}
+
+func (u *taskUpdate) clearReminder() *taskUpdate {
+	u.fields["ato"] = nil
+	return u
+}
+
 func (u *taskUpdate) deadline(dd int64) *taskUpdate {
 	u.fields["dd"] = dd
 	return u
@@ -291,6 +520,16 @@ func (u *taskUpdate) clearDeadline() *taskUpdate {
 
 func (u *taskUpdate) project(uuid string) *taskUpdate {
 	u.fields["pr"] = []string{uuid}
+	return u
+}
+
+func (u *taskUpdate) heading(uuid string) *taskUpdate {
+	u.fields["agr"] = []string{uuid}
+	return u
+}
+
+func (u *taskUpdate) clearHeading() *taskUpdate {
+	u.fields["agr"] = []string{}
 	return u
 }
 
@@ -325,8 +564,11 @@ type CreateTaskRequest struct {
 	Deadline   string `json:"deadline,omitempty"`    // YYYY-MM-DD
 	Project    string `json:"project,omitempty"`     // project UUID
 	ParentTask string `json:"parent_task,omitempty"` // parent task UUID (for subtasks)
+	Heading    string `json:"heading,omitempty"`     // heading UUID (agr) to place the task under
 	Tags       string `json:"tags,omitempty"`        // comma-separated tag UUIDs
 	Repeat     string `json:"repeat,omitempty"`      // daily, weekly, monthly, yearly, every N days/weeks/months/years, optional "until YYYY-MM-DD"
+	Reminder   string `json:"reminder,omitempty"`    // HH:MM (24h); requires a dated when (today or YYYY-MM-DD)
+	Timezone   string `json:"timezone,omitempty"`    // IANA name resolving "today" for this call; defaults to THINGS_TIMEZONE
 }
 
 // EditTaskRequest is the JSON body for POST /api/tasks/edit.
@@ -338,9 +580,12 @@ type EditTaskRequest struct {
 	Deadline   string `json:"deadline,omitempty"`
 	Project    string `json:"project,omitempty"`
 	ParentTask string `json:"parent_task,omitempty"`
+	Heading    string `json:"heading,omitempty"` // heading UUID (agr), or "none" to detach
 	Area       string `json:"area,omitempty"`
 	Tags       string `json:"tags,omitempty"`
-	Repeat     string `json:"repeat,omitempty"` // daily, weekly, monthly, yearly, every N days/weeks/months/years, optional "until YYYY-MM-DD", none
+	Repeat     string `json:"repeat,omitempty"`   // daily, weekly, monthly, yearly, every N days/weeks/months/years, optional "until YYYY-MM-DD", none
+	Reminder   string `json:"reminder,omitempty"` // HH:MM (24h) or "none" to clear; requires the task to keep a dated when
+	Timezone   string `json:"timezone,omitempty"` // IANA name resolving "today" for this call; defaults to THINGS_TIMEZONE
 }
 
 // UUIDRequest is the JSON body for complete/trash endpoints.
@@ -510,18 +755,46 @@ func historyWrite(env writeEnvelope) error {
 	return nil
 }
 
+// writeToHistory is the seam through which every mutation reaches Things
+// Cloud. Overridable in tests to capture envelopes without a network.
+var writeToHistory = historyWrite
+
 func isConflictError(err error) bool {
 	var statusErr *thingscloud.HTTPStatusError
 	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusConflict
 }
 
+// parseReminder parses a 24h "HH:MM" reminder time into seconds after
+// midnight of the task's scheduled day (the wire ato field).
+func parseReminder(s string) (int, error) {
+	t, err := time.Parse("15:04", s)
+	if err != nil {
+		return 0, invalidInputf("reminder must be 24h HH:MM format, got: %s", s)
+	}
+	return t.Hour()*3600 + t.Minute()*60, nil
+}
+
+// editKeepsDate reports whether the task will still carry a scheduled day
+// after the edit — the anchor a reminder needs.
+func editKeepsDate(req EditTaskRequest, task *thingscloud.Task, loc *time.Location) bool {
+	if req.When == "none" {
+		return false
+	}
+	if req.When != "" {
+		_, sr, tir, ok := parseWhen(req.When, loc)
+		return ok && (sr != nil || tir != nil)
+	}
+	return task.ScheduledDate != nil || task.TodayIndexReference != nil
+}
+
 // parseWhen interprets the when parameter. Returns (st, sr, tir, handled).
 // For named values (today/anytime/someday/inbox/none) and YYYY-MM-DD dates.
 // A future date goes to Upcoming (st=2), today's date goes to Today (st=1).
-func parseWhen(when string) (st int, sr, tir *int64, handled bool) {
+// Relative days resolve against the calendar day currently observed in loc.
+func parseWhen(when string, loc *time.Location) (st int, sr, tir *int64, handled bool) {
 	switch when {
 	case "today":
-		today := todayMidnightUTC()
+		today := todayMidnightIn(loc)
 		return 1, &today, &today, true
 	case "anytime":
 		return 1, nil, nil, true
@@ -535,7 +808,7 @@ func parseWhen(when string) (st int, sr, tir *int64, handled bool) {
 		// Try parsing as YYYY-MM-DD
 		if t, err := time.Parse("2006-01-02", when); err == nil {
 			ts := t.UTC().Unix()
-			today := todayMidnightUTC()
+			today := todayMidnightIn(loc)
 			if ts < today {
 				// Past date → treat as Today
 				return 1, &today, &today, true
@@ -557,7 +830,38 @@ func createTask(req CreateTaskRequest) (string, error) {
 	if err := validateOptionalUUID("parent_task", req.ParentTask); err != nil {
 		return "", err
 	}
+	if err := validateOptionalUUID("heading", req.Heading); err != nil {
+		return "", err
+	}
+	req.Project = normalizeOptionalUUID(req.Project)
+	req.ParentTask = normalizeOptionalUUID(req.ParentTask)
+	req.Heading = normalizeOptionalUUID(req.Heading)
 	tg, err := parseUUIDList("tags", req.Tags)
+	if err != nil {
+		return "", err
+	}
+
+	state := validationState()
+	if req.Project != "" {
+		if err := requireProject(state, "project", req.Project); err != nil {
+			return "", err
+		}
+	}
+	if req.ParentTask != "" {
+		if _, err := requireTask(state, "parent_task", req.ParentTask); err != nil {
+			return "", err
+		}
+	}
+	if req.Heading != "" {
+		if err := requireHeading(state, "heading", req.Heading); err != nil {
+			return "", err
+		}
+	}
+	if err := requireTags(state, "tags", tg); err != nil {
+		return "", err
+	}
+
+	loc, err := resolveLocation(req.Timezone)
 	if err != nil {
 		return "", err
 	}
@@ -570,7 +874,7 @@ func createTask(req CreateTaskRequest) (string, error) {
 	var dd *int64
 
 	if req.When != "" {
-		s, r, t, ok := parseWhen(req.When)
+		s, r, t, ok := parseWhen(req.When, loc)
 		if !ok {
 			return "", invalidInputf("invalid when value: %s (use today, anytime, someday, inbox, or YYYY-MM-DD)", req.When)
 		}
@@ -595,10 +899,22 @@ func createTask(req CreateTaskRequest) (string, error) {
 			return "", invalidInputf("deadline must be YYYY-MM-DD format, got: %s", req.Deadline)
 		}
 		ts := t.Unix()
-		if ts < todayMidnightUTC() {
+		if ts < todayMidnightIn(loc) {
 			return "", invalidInputf("deadline cannot be in the past")
 		}
 		dd = &ts
+	}
+
+	var ato *int
+	if req.Reminder != "" && req.Reminder != "none" {
+		sec, err := parseReminder(req.Reminder)
+		if err != nil {
+			return "", err
+		}
+		if sr == nil {
+			return "", invalidInputf("reminder requires a scheduled date; set when to today or YYYY-MM-DD")
+		}
+		ato = &sec
 	}
 
 	pr := []string{}
@@ -606,6 +922,15 @@ func createTask(req CreateTaskRequest) (string, error) {
 		pr = []string{req.ParentTask}
 	} else if req.Project != "" {
 		pr = []string{req.Project}
+		if req.When == "" {
+			st = 1
+		}
+	}
+
+	agr := []string{}
+	if req.Heading != "" {
+		agr = []string{req.Heading}
+		// Tasks under headings are structural — never inbox unless asked.
 		if req.When == "" {
 			st = 1
 		}
@@ -619,9 +944,11 @@ func createTask(req CreateTaskRequest) (string, error) {
 	// Build repeat rule if specified
 	var rr *json.RawMessage
 	if req.Repeat != "" {
-		refDate := time.Now()
+		// Resolve the reference day in the request's timezone; sr is already
+		// a UTC-midnight-encoded date, so read its components in UTC.
+		refDate := timeNow().In(loc)
 		if sr != nil {
-			refDate = time.Unix(*sr, 0)
+			refDate = time.Unix(*sr, 0).UTC()
 		}
 		rr, err = buildRepeatRule(req.Repeat, refDate)
 		if err != nil {
@@ -633,14 +960,14 @@ func createTask(req CreateTaskRequest) (string, error) {
 		Tp: 0, Sr: sr, Dds: nil, Rt: []string{}, Rmd: nil,
 		Ss: 0, Tr: false, Dl: []string{}, Icp: false, St: st,
 		Ar: []string{}, Tt: req.Title, Do: 0, Lai: nil, Tir: tir,
-		Tg: tg, Agr: []string{}, Ix: 0, Cd: now, Lt: false,
-		Icc: 0, Md: nil, Ti: 0, Dd: dd, Ato: nil, Nt: nt,
+		Tg: tg, Agr: agr, Ix: 0, Cd: now, Lt: false,
+		Icc: 0, Md: nil, Ti: 0, Dd: dd, Ato: ato, Nt: nt,
 		Icsd: nil, Pr: pr, Rp: nil, Acrd: nil, Sp: nil,
 		Sb: 0, Rr: rr, Xx: defaultExtension(),
 	}
 
 	env := writeEnvelope{id: taskUUID, action: 0, kind: "Task6", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return "", err
 	}
 	syncAfterWrite()
@@ -651,10 +978,30 @@ func completeTask(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
 	ts := nowTs()
 	u := newTaskUpdate().status(3).stopDate(ts)
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
+		return err
+	}
+	syncAfterWrite()
+	return nil
+}
+
+func cancelTask(uuid string) error {
+	if err := validateUUID("uuid", uuid); err != nil {
+		return err
+	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	ts := nowTs()
+	u := newTaskUpdate().status(2).stopDate(ts)
+	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -665,9 +1012,12 @@ func trashTask(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
 	u := newTaskUpdate().trash(true)
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -684,6 +1034,9 @@ func editTask(req EditTaskRequest) error {
 	if err := validateOptionalUUID("parent_task", req.ParentTask); err != nil {
 		return err
 	}
+	if err := validateOptionalUUID("heading", req.Heading); err != nil {
+		return err
+	}
 	if err := validateOptionalUUID("area", req.Area); err != nil {
 		return err
 	}
@@ -692,9 +1045,58 @@ func editTask(req EditTaskRequest) error {
 		return err
 	}
 
+	st := validationState()
+	task, err := requireTask(st, "uuid", req.UUID)
+	if err != nil {
+		return err
+	}
+	if req.Heading != "" && req.Heading != "none" {
+		if err := requireHeading(st, "heading", req.Heading); err != nil {
+			return err
+		}
+	}
+	if req.Project != "" && req.Project != "none" {
+		if err := requireProject(st, "project", req.Project); err != nil {
+			return err
+		}
+	}
+	if req.ParentTask != "" && req.ParentTask != "none" {
+		if _, err := requireTask(st, "parent_task", req.ParentTask); err != nil {
+			return err
+		}
+	}
+	if req.Area != "" && req.Area != "none" {
+		if err := requireArea(st, "area", req.Area); err != nil {
+			return err
+		}
+	}
+	if err := requireTags(st, "tags", tags); err != nil {
+		return err
+	}
+
+	loc, err := resolveLocation(req.Timezone)
+	if err != nil {
+		return err
+	}
+	fields, err := buildEditUpdate(req, task, loc)
+	if err != nil {
+		return err
+	}
+	env := writeEnvelope{id: req.UUID, action: 1, kind: "Task6", payload: fields}
+	if err := writeToHistory(env); err != nil {
+		return err
+	}
+	syncAfterWrite()
+	return nil
+}
+
+// buildEditUpdate constructs the update payload for an edit. task is the
+// task's current synced state; inputs must already be format-validated, and
+// loc is the resolved calendar-day timezone for this request.
+func buildEditUpdate(req EditTaskRequest, task *thingscloud.Task, loc *time.Location) (map[string]any, error) {
 	u := newTaskUpdate()
 	if req.Repeat != "" && req.When == "inbox" {
-		return invalidInputf("repeat tasks cannot be in inbox; use when:anytime, today, someday, YYYY-MM-DD, or omit when")
+		return nil, invalidInputf("repeat tasks cannot be in inbox; use when:anytime, today, someday, YYYY-MM-DD, or omit when")
 	}
 
 	if req.Title != "" {
@@ -708,34 +1110,73 @@ func editTask(req EditTaskRequest) error {
 	if req.When == "none" {
 		u.fields["sr"] = nil
 		u.fields["tir"] = nil
+		// A reminder can't outlive its scheduled day.
+		u.clearReminder()
 	} else if req.When != "" {
-		st, sr, tir, ok := parseWhen(req.When)
+		st, sr, tir, ok := parseWhen(req.When, loc)
 		if !ok {
-			return invalidInputf("invalid when value: %s (use today, anytime, someday, inbox, none, or YYYY-MM-DD)", req.When)
+			return nil, invalidInputf("invalid when value: %s (use today, anytime, someday, inbox, none, or YYYY-MM-DD)", req.When)
 		}
 		u.schedule(st, sr, tir)
+		if sr == nil && tir == nil {
+			// Undated schedules (anytime/someday/inbox) drop any reminder.
+			u.clearReminder()
+		}
+	}
+	if req.Reminder == "none" {
+		u.clearReminder()
+	} else if req.Reminder != "" {
+		sec, err := parseReminder(req.Reminder)
+		if err != nil {
+			return nil, err
+		}
+		if !editKeepsDate(req, task, loc) {
+			return nil, invalidInputf("reminder requires a scheduled date; set when to today or YYYY-MM-DD")
+		}
+		u.reminder(sec)
 	}
 	if req.Deadline == "none" {
 		u.clearDeadline()
 	} else if req.Deadline != "" {
 		t, err := time.Parse("2006-01-02", req.Deadline)
 		if err != nil {
-			return invalidInputf("deadline must be YYYY-MM-DD format, got: %s", req.Deadline)
+			return nil, invalidInputf("deadline must be YYYY-MM-DD format, got: %s", req.Deadline)
 		}
-		if t.Unix() < todayMidnightUTC() {
-			return invalidInputf("deadline cannot be in the past")
+		if t.Unix() < todayMidnightIn(loc) {
+			return nil, invalidInputf("deadline cannot be in the past")
 		}
 		u.deadline(t.Unix())
 	}
-	if req.ParentTask != "" {
+	assigningParent := req.ParentTask != "" && req.ParentTask != "none"
+	assigningProject := req.Project != "" && req.Project != "none"
+	switch {
+	case req.ParentTask == "none" || (req.Project == "none" && req.ParentTask == ""):
+		u.fields["pr"] = []string{}
+	case assigningParent:
 		u.project(req.ParentTask)
-	} else if req.Project != "" {
+	case assigningProject:
 		u.project(req.Project)
-		if req.When == "" {
+	}
+	// Moving into a project/parent only forces a reschedule when the task is
+	// leaving the inbox (inbox tasks can't live in projects); a task that
+	// already has a date keeps it.
+	if (assigningParent || assigningProject) && req.When == "" && task.Schedule == thingscloud.TaskScheduleInbox {
+		u.schedule(1, nil, nil)
+	}
+	if req.Heading == "none" {
+		u.clearHeading()
+	} else if req.Heading != "" {
+		u.heading(req.Heading)
+		// Headed tasks are structural — leave the inbox unless when says otherwise.
+		if req.When == "" && task.Schedule == thingscloud.TaskScheduleInbox {
 			u.schedule(1, nil, nil)
 		}
 	}
 	if req.Tags != "" {
+		tags, err := parseUUIDList("tags", req.Tags)
+		if err != nil {
+			return nil, err
+		}
 		u.tags(tags)
 	}
 	if req.Area == "none" {
@@ -746,39 +1187,36 @@ func editTask(req EditTaskRequest) error {
 	if req.Repeat == "none" {
 		u.fields["rr"] = nil
 	} else if req.Repeat != "" {
-		// If no new "when" is provided and the current task lives in Inbox, move it to Anytime.
-		// This avoids an inconsistent repeat+inbox combination in Things.
-		if req.When == "" {
-			if err := syncForRead(); err == nil {
-				if task, tErr := syncer.State().Task(req.UUID); tErr == nil && task != nil && task.Schedule == thingscloud.TaskScheduleInbox {
-					u.schedule(1, nil, nil)
-				}
-			}
+		// If no new "when" is provided and the task lives in Inbox, move it to
+		// Anytime to avoid an inconsistent repeat+inbox combination in Things.
+		if req.When == "" && task.Schedule == thingscloud.TaskScheduleInbox {
+			u.schedule(1, nil, nil)
 		}
 
-		refDate := time.Now()
-		rr, err := buildRepeatRule(req.Repeat, refDate)
+		rr, err := buildRepeatRule(req.Repeat, timeNow().In(loc))
 		if err != nil {
-			return fmt.Errorf("invalid repeat: %w", err)
+			return nil, fmt.Errorf("invalid repeat: %w", err)
 		}
 		u.fields["rr"] = rr
 	}
-	env := writeEnvelope{id: req.UUID, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
-		return err
-	}
-	syncAfterWrite()
-	return nil
+	return u.build(), nil
 }
 
-func moveTaskToToday(uuid string) error {
+func moveTaskToToday(uuid, tzName string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
-	today := todayMidnightUTC()
+	loc, err := resolveLocation(tzName)
+	if err != nil {
+		return err
+	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	today := todayMidnightIn(loc)
 	u := newTaskUpdate().schedule(1, today, today)
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -789,9 +1227,12 @@ func moveTaskToAnytime(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
-	u := newTaskUpdate().schedule(1, nil, nil)
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	u := newTaskUpdate().schedule(1, nil, nil).clearReminder()
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -802,9 +1243,12 @@ func moveTaskToSomeday(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
-	u := newTaskUpdate().schedule(2, nil, nil)
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	u := newTaskUpdate().schedule(2, nil, nil).clearReminder()
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -815,9 +1259,12 @@ func moveTaskToInbox(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
-	u := newTaskUpdate().schedule(0, nil, nil)
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	u := newTaskUpdate().schedule(0, nil, nil).clearReminder()
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -828,10 +1275,13 @@ func uncompleteTask(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
 	u := newTaskUpdate().status(0)
 	u.fields["sp"] = nil
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -842,9 +1292,34 @@ func untrashTask(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
 	u := newTaskUpdate().trash(false)
 	env := writeEnvelope{id: uuid, action: 1, kind: "Task6", payload: u.build()}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
+		return err
+	}
+	syncAfterWrite()
+	return nil
+}
+
+// purgeTask permanently deletes a task via Tombstone2. Unlike trash, this
+// cannot be undone — the event removes the task from every synced device.
+func purgeTask(uuid string) error {
+	if err := validateUUID("uuid", uuid); err != nil {
+		return err
+	}
+	if _, err := requireTask(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	tombUUID := generateUUID()
+	payload := map[string]any{
+		"dloid": uuid,
+		"dld":   nowTs(),
+	}
+	env := writeEnvelope{id: tombUUID, action: 0, kind: "Tombstone2", payload: payload}
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -857,6 +1332,9 @@ func createArea(title string, tagUUIDs []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := requireTags(validationState(), "tags", validatedTags); err != nil {
+		return "", err
+	}
 	payload := map[string]any{
 		"ix": 0,
 		"tt": title,
@@ -864,16 +1342,41 @@ func createArea(title string, tagUUIDs []string) (string, error) {
 		"xx": defaultExtension(),
 	}
 	env := writeEnvelope{id: areaUUID, action: 0, kind: "Area3", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return "", err
 	}
 	syncAfterWrite()
 	return areaUUID, nil
 }
 
+func editArea(uuid, title string) error {
+	if err := validateUUID("uuid", uuid); err != nil {
+		return err
+	}
+	if title == "" {
+		return invalidInputf("title is required")
+	}
+	if err := requireArea(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	payload := map[string]any{"tt": title}
+	env := writeEnvelope{id: uuid, action: 1, kind: "Area3", payload: payload}
+	if err := writeToHistory(env); err != nil {
+		return err
+	}
+	syncAfterWrite()
+	return nil
+}
+
 func createTag(title, shorthand, parentUUID string) (string, error) {
 	if err := validateOptionalUUID("parent", parentUUID); err != nil {
 		return "", err
+	}
+	parentUUID = normalizeOptionalUUID(parentUUID)
+	if parentUUID != "" {
+		if err := requireTag(validationState(), "parent", parentUUID); err != nil {
+			return "", err
+		}
 	}
 	tagUUID := generateUUID()
 	pn := []string{}
@@ -892,16 +1395,49 @@ func createTag(title, shorthand, parentUUID string) (string, error) {
 		"xx": defaultExtension(),
 	}
 	env := writeEnvelope{id: tagUUID, action: 0, kind: "Tag4", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return "", err
 	}
 	syncAfterWrite()
 	return tagUUID, nil
 }
 
+func editTag(uuid, title, shorthand string) error {
+	if err := validateUUID("uuid", uuid); err != nil {
+		return err
+	}
+	if title == "" && shorthand == "" {
+		return invalidInputf("nothing to change: set title and/or shorthand")
+	}
+	if err := requireTag(validationState(), "uuid", uuid); err != nil {
+		return err
+	}
+	payload := map[string]any{}
+	if title != "" {
+		payload["tt"] = title
+	}
+	if shorthand == "none" {
+		payload["sh"] = nil
+	} else if shorthand != "" {
+		payload["sh"] = shorthand
+	}
+	env := writeEnvelope{id: uuid, action: 1, kind: "Tag4", payload: payload}
+	if err := writeToHistory(env); err != nil {
+		return err
+	}
+	syncAfterWrite()
+	return nil
+}
+
 func createHeading(title, projectUUID string) (string, error) {
 	if err := validateOptionalUUID("project", projectUUID); err != nil {
 		return "", err
+	}
+	projectUUID = normalizeOptionalUUID(projectUUID)
+	if projectUUID != "" {
+		if err := requireProject(validationState(), "project", projectUUID); err != nil {
+			return "", err
+		}
 	}
 	headingUUID := generateUUID()
 	now := nowTs()
@@ -922,16 +1458,26 @@ func createHeading(title, projectUUID string) (string, error) {
 	}
 
 	env := writeEnvelope{id: headingUUID, action: 0, kind: "Task6", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return "", err
 	}
 	syncAfterWrite()
 	return headingUUID, nil
 }
 
-func createProject(title, note, when, deadline, areaUUID string) (string, error) {
+func createProject(title, note, when, deadline, areaUUID, tzName string) (string, error) {
 	if err := validateOptionalUUID("area", areaUUID); err != nil {
 		return "", err
+	}
+	loc, err := resolveLocation(tzName)
+	if err != nil {
+		return "", err
+	}
+	areaUUID = normalizeOptionalUUID(areaUUID)
+	if areaUUID != "" {
+		if err := requireArea(validationState(), "area", areaUUID); err != nil {
+			return "", err
+		}
 	}
 	projectUUID := generateUUID()
 	now := nowTs()
@@ -943,7 +1489,7 @@ func createProject(title, note, when, deadline, areaUUID string) (string, error)
 	switch when {
 	case "today":
 		st = 1
-		today := todayMidnightUTC()
+		today := todayMidnightIn(loc)
 		sr = &today
 		tir = &today
 	case "someday":
@@ -960,7 +1506,7 @@ func createProject(title, note, when, deadline, areaUUID string) (string, error)
 			return "", invalidInputf("deadline must be YYYY-MM-DD format, got: %s", deadline)
 		}
 		ts := t.Unix()
-		if ts < todayMidnightUTC() {
+		if ts < todayMidnightIn(loc) {
 			return "", invalidInputf("deadline cannot be in the past")
 		}
 		dd = &ts
@@ -987,7 +1533,7 @@ func createProject(title, note, when, deadline, areaUUID string) (string, error)
 	}
 
 	env := writeEnvelope{id: projectUUID, action: 0, kind: "Task6", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return "", err
 	}
 	syncAfterWrite()
@@ -1001,6 +1547,13 @@ func createProject(title, note, when, deadline, areaUUID string) (string, error)
 func createChecklistItem(title, taskUUID string) (string, error) {
 	if err := validateUUID("task_uuid", taskUUID); err != nil {
 		return "", err
+	}
+	task, err := requireTask(validationState(), "task_uuid", taskUUID)
+	if err != nil {
+		return "", err
+	}
+	if task.Type != thingscloud.TaskTypeTask {
+		return "", invalidInputf("checklist items can only be added to tasks, not projects or headings: %s", taskUUID)
 	}
 	itemUUID := generateUUID()
 	now := nowTs()
@@ -1016,7 +1569,7 @@ func createChecklistItem(title, taskUUID string) (string, error) {
 		"xx": defaultExtension(),
 	}
 	env := writeEnvelope{id: itemUUID, action: 0, kind: "ChecklistItem3", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return "", err
 	}
 	syncAfterWrite()
@@ -1027,6 +1580,9 @@ func completeChecklistItem(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if err := requireChecklistItem(validationState(), uuid); err != nil {
+		return err
+	}
 	ts := nowTs()
 	payload := map[string]any{
 		"md": ts,
@@ -1034,7 +1590,7 @@ func completeChecklistItem(uuid string) error {
 		"sp": ts,
 	}
 	env := writeEnvelope{id: uuid, action: 1, kind: "ChecklistItem3", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -1045,13 +1601,38 @@ func uncompleteChecklistItem(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if err := requireChecklistItem(validationState(), uuid); err != nil {
+		return err
+	}
 	payload := map[string]any{
 		"md": nowTs(),
 		"ss": 0,
 		"sp": nil,
 	}
 	env := writeEnvelope{id: uuid, action: 1, kind: "ChecklistItem3", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
+		return err
+	}
+	syncAfterWrite()
+	return nil
+}
+
+func editChecklistItem(uuid, title string) error {
+	if err := validateUUID("uuid", uuid); err != nil {
+		return err
+	}
+	if title == "" {
+		return invalidInputf("title is required")
+	}
+	if err := requireChecklistItem(validationState(), uuid); err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"md": nowTs(),
+		"tt": title,
+	}
+	env := writeEnvelope{id: uuid, action: 1, kind: "ChecklistItem3", payload: payload}
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()
@@ -1062,6 +1643,9 @@ func deleteChecklistItem(uuid string) error {
 	if err := validateUUID("uuid", uuid); err != nil {
 		return err
 	}
+	if err := requireChecklistItem(validationState(), uuid); err != nil {
+		return err
+	}
 	// Delete via Tombstone2
 	tombUUID := generateUUID()
 	payload := map[string]any{
@@ -1069,7 +1653,7 @@ func deleteChecklistItem(uuid string) error {
 		"dld":   nowTs(),
 	}
 	env := writeEnvelope{id: tombUUID, action: 0, kind: "Tombstone2", payload: payload}
-	if err := historyWrite(env); err != nil {
+	if err := writeToHistory(env); err != nil {
 		return err
 	}
 	syncAfterWrite()

@@ -156,3 +156,23 @@ Source: `TaskActionItemPayload` in `types.go:209-274`
 | Batch operations | `batch` command | — | No batch endpoint in server |
 | Scheduled date (`--scheduled`) | Create+edit | Via `when` param | Different UX, same wire result |
 | Checklist on create | `--checklist` flag | Separate tool | Minor convenience gap |
+
+---
+
+## Addendum — 2026-07-06
+
+Status update after the MCP/SDK parity batch (server v1.3.0). Closed since this review:
+
+| Gap (from §5) | Resolution |
+|---------------|------------|
+| #1 Anytime/Someday/Upcoming views | Shipped earlier (things_list_anytime/someday/upcoming) |
+| #2 Area/tag editing | `things_edit_area`, `things_edit_tag` |
+| #4 Heading assignment via MCP | `heading` param on `things_create_task` + `things_edit_task` |
+| #5 Cancel task | `things_cancel_task` |
+| #7 Purge via MCP | `things_purge_task` (destructive-hinted) |
+| #8 Reminders | `reminder` param (HH:MM → `ato`) + `reminder` in output; sync engine honors explicit `ato`/`rr` clears via payload presence tracking |
+| #9 Repeat config in read output | `repeat` summary in task output; `rr` now persisted by the sync engine |
+| #10 Checklist item title editing | `things_edit_checklist_item` |
+| #11 Tasks-by-tag query | `things_list_tag_tasks` / `State.TasksWithTag` |
+
+Still open: #3 area/tag deletion (Tombstone2 untested for those kinds), #6 task reordering (`ix`/`ti`/`do` semantics unknown), and the low-priority items (#12–#19) minus #11.
