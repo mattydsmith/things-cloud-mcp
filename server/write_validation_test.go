@@ -398,6 +398,9 @@ func TestGenerateUUIDCanonicalLength(t *testing.T) {
 		if !isBase58UUID(id) {
 			t.Fatalf("generateUUID emitted an id our own validator rejects: %q", id)
 		}
+		if id[0] == '1' {
+			t.Fatalf("generateUUID must never emit a leading-'1' (zero-byte) id — the app's Base58 decoder overflows on them: %q", id)
+		}
 	}
 }
 

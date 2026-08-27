@@ -200,28 +200,32 @@ func validateUUIDSlice(name string, ids []string) ([]string, error) {
 	return out, nil
 }
 
+// generateUUID returns a Things identifier: a UUIDv4 whose Base58 encoding
+// is naturally exactly 22 characters. Shorter encodings (UUIDs with small
+// leading bytes, ~3% of draws) are rejected and redrawn rather than padded:
+// under Bitcoin-style Base58 semantics a leading '1' denotes a leading zero
+// BYTE, so a padded "1" + 21 chars can decode to 17 bytes — more than a
+// 16-byte UUID — and the Things app's decoder hard-crashes on it.
 func generateUUID() string {
-	u := uuid.New()
 	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	n := new(big.Int).SetBytes(u[:])
 	base := big.NewInt(58)
-	mod := new(big.Int)
-	var encoded []byte
-	for n.Sign() > 0 {
-		n.DivMod(n, base, mod)
-		encoded = append(encoded, alphabet[mod.Int64()])
+	for {
+		u := uuid.New()
+		n := new(big.Int).SetBytes(u[:])
+		mod := new(big.Int)
+		var encoded []byte
+		for n.Sign() > 0 {
+			n.DivMod(n, base, mod)
+			encoded = append(encoded, alphabet[mod.Int64()])
+		}
+		if len(encoded) != 22 {
+			continue
+		}
+		for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
+			encoded[i], encoded[j] = encoded[j], encoded[i]
+		}
+		return string(encoded)
 	}
-	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
-		encoded[i], encoded[j] = encoded[j], encoded[i]
-	}
-	// Left-pad with '1' (zero in Base58) to the canonical 22 characters:
-	// UUIDs with leading zero bytes would otherwise encode shorter than the
-	// fixed length Things uses.
-	s := string(encoded)
-	for len(s) < 22 {
-		s = "1" + s
-	}
-	return s
 }
 
 const defaultSyncMinInterval = 2 * time.Second
