@@ -69,3 +69,39 @@ func TestProcessTask7Items(t *testing.T) {
 		t.Fatalf("Task7 completion not applied: %+v", task)
 	}
 }
+
+func TestResetLocalStateWipesMirrorAndCursor(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	syncer, err := Open(dbPath, nil)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer syncer.Close()
+
+	if err := syncer.saveTask(&things.Task{UUID: "stale-1", Title: "from old stream"}); err != nil {
+		t.Fatalf("saveTask failed: %v", err)
+	}
+	if err := syncer.saveSyncState("old-history-key", 42); err != nil {
+		t.Fatalf("saveSyncState failed: %v", err)
+	}
+
+	if err := syncer.resetLocalState(); err != nil {
+		t.Fatalf("resetLocalState failed: %v", err)
+	}
+
+	task, err := syncer.State().Task("stale-1")
+	if err != nil {
+		t.Fatalf("Task lookup failed: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("expected mirror to be empty after reset, found: %+v", task)
+	}
+	key, idx, err := syncer.getSyncState()
+	if err != nil {
+		t.Fatalf("getSyncState failed: %v", err)
+	}
+	if key != "" || idx != 0 {
+		t.Fatalf("expected cleared sync cursor, got key=%q idx=%d", key, idx)
+	}
+}

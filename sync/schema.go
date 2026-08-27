@@ -202,3 +202,10 @@ func (s *Syncer) migrate() error {
 	_, err = s.db.Exec("UPDATE schema_version SET version = ?", schemaVersion)
 	return err
 }
+
+// resetLocalState wipes the local mirror and sync cursor so state can be
+// rebuilt from a different (or replaced) history stream.
+func (s *Syncer) resetLocalState() error {
+	_, err := s.db.Exec(migration5)
+	return err
+}
