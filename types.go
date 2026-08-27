@@ -59,7 +59,10 @@ var (
 	ItemKindChecklistItem2 ItemKind = "ChecklistItem2"
 	ItemKindChecklistItem3 ItemKind = "ChecklistItem3"
 	// ItemKindTask identifies a Task or Subtask
-	ItemKindTask      ItemKind = "Task6"
+	ItemKindTask ItemKind = "Task6"
+	// ItemKindTask7 is the Task revision written by Things 3.23+ clients;
+	// its payload is field-identical to Task6.
+	ItemKindTask7     ItemKind = "Task7"
 	ItemKindTask4     ItemKind = "Task4"
 	ItemKindTask3     ItemKind = "Task3"
 	ItemKindTaskPlain ItemKind = "Task"
@@ -68,7 +71,8 @@ var (
 	ItemKindArea3     ItemKind = "Area3"
 	ItemKindAreaPlain ItemKind = "Area"
 	// ItemKindSettings  identifies a setting
-	ItemKindSettings ItemKind = "Settings3"
+	ItemKindSettings  ItemKind = "Settings3"
+	ItemKindSettings5 ItemKind = "Settings5"
 	// ItemKindTag identifies a Tag
 	ItemKindTag       ItemKind = "Tag3"
 	ItemKindTag4      ItemKind = "Tag4"

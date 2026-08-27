@@ -210,7 +210,7 @@ func (s *State) updateTag(item things.TagActionItem) *things.Tag {
 func (s *State) Update(items ...things.Item) error {
 	for _, rawItem := range items {
 		switch rawItem.Kind {
-		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+		case things.ItemKindTask, things.ItemKindTask7, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			item := things.TaskActionItem{Item: rawItem}
 			if err := json.Unmarshal(rawItem.P, &item.P); err != nil {
 				continue // Skip items that can't be parsed
