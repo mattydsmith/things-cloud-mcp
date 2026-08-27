@@ -55,7 +55,7 @@ func (st *State) AllTasks(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -70,7 +70,7 @@ func (st *State) AllProjects(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 1 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -162,7 +162,7 @@ func (st *State) TasksInInbox(opts QueryOpts) ([]*things.Task, error) {
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND schedule = 0 AND deleted = 0`
 	args := []any{}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -185,7 +185,7 @@ func (st *State) TasksInToday(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -216,7 +216,7 @@ func (st *State) TasksInAnytime(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{todayUnix, tomorrowUnix, todayUnix, tomorrowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -238,7 +238,7 @@ func (st *State) TasksInSomeday(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{nowUnix, nowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -261,7 +261,7 @@ func (st *State) TasksInUpcoming(opts QueryOpts) ([]*things.Task, error) {
 		) AND deleted = 0`
 	args := []any{nowUnix, nowUnix}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -278,7 +278,7 @@ func (st *State) TasksInProject(projectUUID string, opts QueryOpts) ([]*things.T
 	query := `SELECT uuid FROM tasks WHERE type IN (0, 2) AND project_uuid = ? AND deleted = 0`
 	args := []any{projectUUID}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -302,7 +302,7 @@ func (st *State) TasksInArea(areaUUID string, opts QueryOpts) ([]*things.Task, e
 	query := `SELECT uuid FROM tasks WHERE type = 0 AND area_uuid = ? AND deleted = 0`
 	args := []any{areaUUID}
 	if !opts.IncludeCompleted {
-		query += " AND status != 3"
+		query += " AND status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND in_trash = 0"
@@ -328,7 +328,7 @@ func (st *State) TasksWithTag(tagUUID string, opts QueryOpts) ([]*things.Task, e
 		WHERE tt.tag_uuid = ? AND t.type = 0 AND t.deleted = 0`
 	args := []any{tagUUID}
 	if !opts.IncludeCompleted {
-		query += " AND t.status != 3"
+		query += " AND t.status NOT IN (2, 3)"
 	}
 	if !opts.IncludeTrashed {
 		query += " AND t.in_trash = 0"
@@ -349,7 +349,7 @@ func (st *State) CompletedTasksInRange(limit int, completedAfter, completedBefor
 	if limit <= 0 {
 		limit = 50
 	}
-	query := `SELECT uuid FROM tasks WHERE type = 0 AND status = 3 AND deleted = 0 AND in_trash = 0
+	query := `SELECT uuid FROM tasks WHERE type = 0 AND status IN (2, 3) AND deleted = 0 AND in_trash = 0
 		AND completion_date IS NOT NULL`
 	args := []any{}
 	if completedAfter != nil {

@@ -125,7 +125,10 @@ func isInvalidInput(err error) bool {
 
 func isBase58UUID(id string) bool {
 	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	if len(id) < 20 || len(id) > 32 {
+	// 128-bit UUIDs encode to at most 22 Base58 characters; the Things app's
+	// decoder hard-crashes (Swift precondition) on anything longer, so never
+	// let a longer identifier reach the wire.
+	if len(id) < 20 || len(id) > 22 {
 		return false
 	}
 	for i := 0; i < len(id); i++ {
@@ -211,7 +214,14 @@ func generateUUID() string {
 	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
 		encoded[i], encoded[j] = encoded[j], encoded[i]
 	}
-	return string(encoded)
+	// Left-pad with '1' (zero in Base58) to the canonical 22 characters:
+	// UUIDs with leading zero bytes would otherwise encode shorter than the
+	// fixed length Things uses.
+	s := string(encoded)
+	for len(s) < 22 {
+		s = "1" + s
+	}
+	return s
 }
 
 const defaultSyncMinInterval = 2 * time.Second

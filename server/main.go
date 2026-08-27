@@ -460,9 +460,19 @@ func main() {
 	http.HandleFunc("/api/tasks/trash", authMiddleware(handleTrashTask))
 	http.HandleFunc("/api/tasks/edit", authMiddleware(handleEditTask))
 
-	// Debug endpoint — dump raw write history items
+	// Debug endpoint — dump raw write history items. Things Cloud truncates
+	// long histories to a size window; pass ?start-index=N to read the tail.
 	http.HandleFunc("/api/debug/history", debugAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		items, err := history.RawItems()
+		startIndex := 0
+		if raw := r.URL.Query().Get("start-index"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 0 {
+				jsonError(w, "start-index must be a non-negative integer", 400)
+				return
+			}
+			startIndex = n
+		}
+		items, err := history.RawItemsFrom(startIndex)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return

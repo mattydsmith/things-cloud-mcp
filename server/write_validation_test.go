@@ -387,3 +387,31 @@ func TestCompleteTaskWritesUpdateEnvelope(t *testing.T) {
 		t.Fatalf("complete should set ss=3, got %v", fields["ss"])
 	}
 }
+
+func TestGenerateUUIDCanonicalLength(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 1000; i++ {
+		id := generateUUID()
+		if len(id) != 22 {
+			t.Fatalf("generateUUID must emit exactly 22 chars, got %d: %q", len(id), id)
+		}
+		if !isBase58UUID(id) {
+			t.Fatalf("generateUUID emitted an id our own validator rejects: %q", id)
+		}
+	}
+}
+
+func TestBase58UUIDRejectsAppIndecodableLengths(t *testing.T) {
+	t.Parallel()
+	// The Things app's Base58 decoder hard-crashes on identifiers longer than
+	// 22 chars; the validator must never let them through.
+	if isBase58UUID(strings.Repeat("A", 23)) {
+		t.Fatal("23-char identifier must be rejected")
+	}
+	if isBase58UUID(strings.Repeat("A", 32)) {
+		t.Fatal("32-char identifier must be rejected")
+	}
+	if !isBase58UUID(strings.Repeat("A", 22)) {
+		t.Fatal("22-char identifier must be accepted")
+	}
+}
